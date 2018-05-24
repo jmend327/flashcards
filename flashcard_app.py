@@ -1,16 +1,28 @@
+#! /usr/bin/python
 # This app acts as flashcards, without the need for a server or paper cards!
 
 import csv
 import pprint
 
 
+
+'''TODO:
+	Create server for interaction with browser
+	Create tags and allow that as parameter (-tags tag1 tag2 ...)
+	Input filename (-f, -n) or set name (-set)
+	Have yaml map set names to files
+	Create scorecard with Passes, Fails, and Pct
+'''
+
+
 def get_flashcard_set():
-	# Returns a set id or filename of the flashcards. For this example, it's 
+	# Returns a filename of the flashcards file. For this example, it's 
 	# the 'flashcards.csv' file.
+	
 	flashcard_set = 'flashcards.csv'
 	return flashcard_set
 
-def convert_csv_to_json(flashcard_set):
+def convert_to_json(flashcard_set):
 	# Converts the flashcard csv to json for easy workability/editing.
 	flashcards_json = []
 
@@ -31,11 +43,11 @@ def study_flashcards_session(flashcards_json):
 		# For now, rendomly generates and returns a number (question ID).
 		return question_id
 
-	def prompt_question_and_input_answer(question_id):
+	def prompt_question(question_id):
 		# Prints the question, and prompts the user for an answer.
-		return success
+		return
 
-	def success_criteria():
+	def evaluate_answer():
 		# Prints the question's answer and asks the user if their answer was correct.
 		return
 
@@ -53,7 +65,9 @@ def convert_json_to_csv():
 
 def main():
 	flashcard_set = get_flashcard_set()
-	flashcards_json = convert_csv_to_json(flashcard_set)
+	flashcards_json = convert_to_json(flashcard_set)
+	
+	pprint.pprint(flashcards_json)
 
 	#study_flashcards_session(flashcards_json)
 	#convert_json_to_csv(flashcards_json)
