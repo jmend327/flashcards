@@ -1,0 +1,8 @@
+# Flashcard set names mapped to file locations
+
+sets:
+    presidents: ./flashcard_sets/'presidents.csv'
+    states: ./flashcard_sets/'states.csv'
+    sports: ./flashcard_sets/'sports.csv'
+    
+    
