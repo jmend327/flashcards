@@ -3,7 +3,7 @@
 
 import csv
 import pprint
-
+import random
 
 
 '''TODO:
@@ -19,7 +19,7 @@ def get_flashcard_set():
 	# Returns a filename of the flashcards file. For this example, it's 
 	# the 'flashcards.csv' file.
 	
-	flashcard_set = 'flashcards.csv'
+	flashcard_set = 'flashcard_sets/presidents.csv'
 	return flashcard_set
 
 def convert_to_json(flashcard_set):
@@ -35,29 +35,30 @@ def check_params():
 	# Ensures that each question contains a question, answer, pass, and fail field.
 	return formatted_flashcards_json
 
-def study_flashcards_session(flashcards_json):
+
+def study_flashcards_session(flashcards_json_list):
 	# Conducts a flashcard study session. This prompts a question to the user, asks 
 	# if their answer was successfull, and updates the question "score" accordingly.
 
 	def choose_question():
 		# For now, rendomly generates and returns a number (question ID).
-		return question_id
+		return random.choice(flashcards_json_list)
 
-	def prompt_question(question_id):
-		# Prints the question, and prompts the user for an answer.
-		return
-
-	def evaluate_answer():
-		# Prints the question's answer and asks the user if their answer was correct.
-		return
-
-	def update_score(question_id):
+	def update_score(question_id, success):
 		# Updates the question score based on run.
 		return
 
-	practice_question(choose_question())
+	user_input = ''
 
-	return flashcards_json
+	while user_input != "quit":
+		print "\n----------\n"
+		question_json = choose_question()
+		user_input = raw_input("Question: " + question_json["Question"] + "\nYour Answer: ")
+		
+		print "\nAnswer: " + str(question_json["Answer"])
+
+		success_criteria = raw_input("\nWas your answer correct? (y/n): ")
+
 
 def convert_json_to_csv():
 	return flashcards_csv
@@ -65,11 +66,9 @@ def convert_json_to_csv():
 
 def main():
 	flashcard_set = get_flashcard_set()
-	flashcards_json = convert_to_json(flashcard_set)
-	
-	pprint.pprint(flashcards_json)
+	flashcards_json_list = convert_to_json(flashcard_set)
 
-	#study_flashcards_session(flashcards_json)
+	study_flashcards_session(flashcards_json_list)
 	#convert_json_to_csv(flashcards_json)
 
 if __name__ == '__main__':
