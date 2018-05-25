@@ -7,6 +7,7 @@ import random
 import pandas
 import json
 import sys
+from openpyxl import Workbook
 
 
 '''TODO:
@@ -22,34 +23,30 @@ def check_params():
 	# Ensures that each question contains a question, answer, pass, and fail field.
 	return
 
-def get_flashcard_set():
+
+def get_flashcard_file():
+	try:
+		return sys.argv[1]
+	except:
+		return 'flashcard_sets/sports.xlsx'
+
+
+def get_filetype(flashcard_file):
+	return flashcard_file.split(".")[-1:][0]
+
+
+def get_flashcard_set(filename, filetype):
 	# Returns a filename of the flashcards file. For this example, it's 
 	# the 'flashcards.csv' file.
 
-	def get_flashcard_file():
-		try:
-			return sys.argv[1]
-		except:
-			return 'flashcard_sets/sports.xlsx'
+	if filetype == 'csv':
+		reader = csv.DictReader(open(filename, 'rb'))
+		for row in reader:
+			flashcards_json.append(row)
+		return flashcards_json
 
-	def get_filetype(flashcard_file):
-		return flashcard_file.split(".")[-1:][0]
-
-	def convert_to_json(filename, filetype):
-		# Converts the flashcard csv to json for easy workability/editing.
-
-		if filetype == 'csv':
-			reader = csv.DictReader(open(filename, 'rb'))
-			for row in reader:
-				flashcards_json.append(row)
-			return flashcards_json
-
-		if filetype == 'xlsx':
-			return json.loads(pandas.read_excel(filename).to_json(orient='records'))
-
-	flashcard_filename = get_flashcard_file()
-
-	return convert_to_json(flashcard_filename,get_filetype(flashcard_filename))
+	if filetype == 'xlsx':
+		return json.loads(pandas.read_excel(filename).to_json(orient='records'))
 
 
 def study_flashcards_session(flashcards_json_list):
@@ -76,18 +73,26 @@ def study_flashcards_session(flashcards_json_list):
 
 		success_criteria = raw_input("\nWas your answer correct? (y/n): ")
 
-		if success_criteria == "quit":
-			break
 
-def convert_json_to_csv():
-	return flashcards_csv
+def end_study_session(json_list,filename,filetype):
+	print "Finished study session, saving " + str(filename)
+
+	if filetype == "xlsx":
+		pandas.read_json(json.dumps(json_list), orient='records').to_excel("saved_flashcards.xlsx")
+
+	print "Done."
 
 
 def main():
-	flashcard_set_list_jsons = get_flashcard_set()
+	flashcard_file = get_flashcard_file()
+	flashcard_filetype = get_filetype(flashcard_file)
+
+	flashcard_set_list_jsons = get_flashcard_set(flashcard_file,flashcard_filetype)
 
 	study_flashcards_session(flashcard_set_list_jsons)
-	#convert_json_to_csv(flashcards_json)
+
+	end_study_session(flashcard_set_list_jsons,flashcard_file,flashcard_filetype)
+
 
 if __name__ == '__main__':
 	main()
