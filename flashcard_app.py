@@ -57,7 +57,7 @@ def study_flashcards_session(flashcards_json_list):
 		# For now, rendomly generates and returns a number (question ID).
 		return random.choice(flashcards_json_list)
 
-	def update_score(question_id, success):
+	def update_score(question_json, success):
 		# Updates the question score based on run.
 		return
 
@@ -69,9 +69,9 @@ def study_flashcards_session(flashcards_json_list):
 		if user_input == "quit":
 			break
 
-		print "\nAnswer: " + str(question_json["Answer"])
+		print "\033[1m\033[92m\nAnswer:\033[0m " + str(question_json["Answer"])
 
-		success_criteria = raw_input("\nWas your answer correct? (y/n): ")
+		#success_criteria = raw_input("\nWas your answer correct? (y/n): ")
 
 
 def end_study_session(json_list,filename,filetype):
@@ -91,7 +91,8 @@ def main():
 
 	study_flashcards_session(flashcard_set_list_jsons)
 
-	end_study_session(flashcard_set_list_jsons,flashcard_file,flashcard_filetype)
+	#end_study_session(flashcard_set_list_jsons,flashcard_file,flashcard_filetype)
+	print "Done with study session."
 
 
 if __name__ == '__main__':
