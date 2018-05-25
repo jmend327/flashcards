@@ -4,6 +4,8 @@
 import csv
 import pprint
 import random
+import pandas
+import json
 
 
 '''TODO:
@@ -15,25 +17,35 @@ import random
 '''
 
 
+def check_params():
+	# Ensures that each question contains a question, answer, pass, and fail field.
+	return
+
 def get_flashcard_set():
 	# Returns a filename of the flashcards file. For this example, it's 
 	# the 'flashcards.csv' file.
-	
-	flashcard_set = 'flashcard_sets/presidents.csv'
-	return flashcard_set
 
-def convert_to_json(flashcard_set):
-	# Converts the flashcard csv to json for easy workability/editing.
-	flashcards_json = []
+	def get_flashcard_file():
+		return 'flashcard_sets/sports.xlsx'
 
-	reader = csv.DictReader(open(flashcard_set, 'rb'))
-	for row in reader:
-		flashcards_json.append(row)
-	return flashcards_json
+	def get_filetype(flashcard_file):
+		return flashcard_file.split(".")[-1:][0]
 
-def check_params():
-	# Ensures that each question contains a question, answer, pass, and fail field.
-	return formatted_flashcards_json
+	def convert_to_json(filename, filetype):
+		# Converts the flashcard csv to json for easy workability/editing.
+
+		if filetype == 'csv':
+			reader = csv.DictReader(open(filename, 'rb'))
+			for row in reader:
+				flashcards_json.append(row)
+			return flashcards_json
+
+		if filetype == 'xlsx':
+			return json.loads(pandas.read_excel(filename).to_json(orient='records'))
+
+	flashcard_filename = get_flashcard_file()
+
+	return convert_to_json(flashcard_filename,get_filetype(flashcard_filename))
 
 
 def study_flashcards_session(flashcards_json_list):
@@ -48,27 +60,29 @@ def study_flashcards_session(flashcards_json_list):
 		# Updates the question score based on run.
 		return
 
-	user_input = ''
-
-	while user_input != "quit":
+	while True:
 		print "\n----------\n"
 		question_json = choose_question()
 		user_input = raw_input("Question: " + question_json["Question"] + "\nYour Answer: ")
 		
+		if user_input == "quit":
+			break
+
 		print "\nAnswer: " + str(question_json["Answer"])
 
 		success_criteria = raw_input("\nWas your answer correct? (y/n): ")
 
+		if success_criteria == "quit":
+			break
 
 def convert_json_to_csv():
 	return flashcards_csv
 
 
 def main():
-	flashcard_set = get_flashcard_set()
-	flashcards_json_list = convert_to_json(flashcard_set)
+	flashcard_set_list_jsons = get_flashcard_set()
 
-	study_flashcards_session(flashcards_json_list)
+	study_flashcards_session(flashcard_set_list_jsons)
 	#convert_json_to_csv(flashcards_json)
 
 if __name__ == '__main__':
