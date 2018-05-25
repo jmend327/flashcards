@@ -9,5 +9,6 @@ dependenies:
   - pandas
   - csv
   - xlrd
+  - openpyxl
     
     
