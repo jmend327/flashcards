@@ -4,5 +4,10 @@ sets:
     presidents: ./flashcard_sets/'presidents.csv'
     states: ./flashcard_sets/'states.csv'
     sports: ./flashcard_sets/'sports.csv'
+
+dependenies:
+  - pandas
+  - csv
+  - xlrd
     
     
