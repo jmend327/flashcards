@@ -6,6 +6,7 @@ import pprint
 import random
 import pandas
 import json
+import sys
 
 
 '''TODO:
@@ -26,7 +27,10 @@ def get_flashcard_set():
 	# the 'flashcards.csv' file.
 
 	def get_flashcard_file():
-		return 'flashcard_sets/sports.xlsx'
+		try:
+			return sys.argv[1]
+		except:
+			return 'flashcard_sets/sports.xlsx'
 
 	def get_filetype(flashcard_file):
 		return flashcard_file.split(".")[-1:][0]
