@@ -68,7 +68,7 @@ def study_flashcards_session(flashcards_json_list):
 		if user_input == "quit":
 			break
 
-		print "\nAnswer: " + str(question_json["Answer"])
+		print "\nAnswer:\n" + str(question_json["Answer"])
 
 		success_criteria = raw_input("\nWas your answer correct? (y/n): ")
 
