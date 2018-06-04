@@ -63,15 +63,25 @@ def study_flashcards_session(flashcards_json_list):
 
 	while True:
 		print "\n----------\n"
+		success_criteria = ''
 		question_json = choose_question()
-		user_input = raw_input("Question: " + question_json["Question"] + "\nYour Answer: ")
-		
+
+		while success_criteria != "y":
+			
+			user_input = raw_input("Question: " + question_json["Question"] + "\nYour Answer: ")
+			
+			if user_input == "quit":
+				break
+
+			print "\033[1m\033[92m\nAnswer:\n\033[0m" + str(question_json["Answer"])
+
+			success_criteria = raw_input("\nWas your answer correct? (y/n): ")
+
+			print "\n"
+			
 		if user_input == "quit":
 			break
 
-		print "\033[1m\033[92m\nAnswer:\n\033[0m" + str(question_json["Answer"])
-
-		#success_criteria = raw_input("\nWas your answer correct? (y/n): ")
 
 
 def end_study_session(json_list,filename,filetype):
