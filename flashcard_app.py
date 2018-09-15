@@ -25,10 +25,11 @@ def check_params():
 
 
 def get_flashcard_file():
+	# Grabs the file the user passed in, or uses a template "sports" sheet if not provided by user
 	try:
 		return sys.argv[1]
 	except:
-		return 'flashcard_sets/sports.xlsx'
+		return "flashcard_sets/sports.xlsx"
 
 
 def get_filetype(flashcard_file):
