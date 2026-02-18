@@ -142,6 +142,15 @@ class Database:
         )
         self.conn.commit()
 
+    def get_card_by_id(self, card_id):
+        cur = self.conn.execute(
+            "SELECT id, front, back, correct_count, incorrect_count,"
+            " card_type, choices"
+            " FROM cards WHERE id = ?",
+            (card_id,),
+        )
+        return cur.fetchone()
+
     def delete_card(self, card_id):
         self.conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
         self.conn.commit()
@@ -587,10 +596,11 @@ class App:
 
     # ── Card Form View ─────────────────────────────────────────
 
-    def show_card_form(self, deck_id, deck_name, card=None):
+    def show_card_form(self, deck_id, deck_name, card=None, on_done=None):
         self._clear()
         editing = card is not None
         title = "Edit Card" if editing else "Add Card"
+        _navigate_back = on_done or (lambda: self.show_deck(deck_id, deck_name))
 
         tk.Label(
             self.container, text=title, font=("Arial", 20, "bold")
@@ -745,7 +755,7 @@ class App:
                 self.db.set_card_tags(card_id, tag_names)
 
             canvas.unbind_all("<MouseWheel>")
-            self.show_deck(deck_id, deck_name)
+            _navigate_back()
 
         btn_frame = tk.Frame(self.container)
         btn_frame.pack(pady=(0, 20))
@@ -758,7 +768,7 @@ class App:
             text="Cancel",
             command=lambda: (
                 canvas.unbind_all("<MouseWheel>"),
-                self.show_deck(deck_id, deck_name),
+                _navigate_back(),
             ),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
@@ -770,6 +780,7 @@ class App:
         random.shuffle(cards)
 
         self._study_cards = cards
+        self._study_title = title
         self._study_index = 0
         self._study_showing_front = True
         self._study_scored = False
@@ -837,6 +848,10 @@ class App:
         self._next_btn.pack(side=tk.LEFT, padx=5)
 
         tk.Button(
+            nav_frame, text="Edit", command=self._edit_study_card, width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
             nav_frame,
             text="Back",
             command=back_callback,
@@ -844,6 +859,98 @@ class App:
         ).pack(side=tk.LEFT, padx=5)
 
         # Action row (Flip or Correct/Incorrect)
+        self._action_frame = tk.Frame(self.container)
+        self._action_frame.pack(pady=(0, 20))
+
+        self._update_study_display()
+
+    def _edit_study_card(self):
+        card = self._study_cards[self._study_index]
+        card_id = card[C_ID]
+
+        def _after_edit():
+            # Re-fetch the edited card from DB and update the study list
+            refreshed = self.db.get_card_by_id(card_id)
+            if refreshed:
+                self._study_cards[self._study_index] = refreshed
+            self._study_showing_front = True
+            self._study_scored = False
+            self._resume_study()
+
+        # deck_id/deck_name aren't used for editing, pass None
+        self.show_card_form(None, None, card=card, on_done=_after_edit)
+
+    def _resume_study(self):
+        """Rebuild the study UI at the current index without reshuffling."""
+        self._clear()
+
+        tk.Label(
+            self.container, text=self._study_title, font=("Arial", 16)
+        ).pack(pady=(20, 5))
+
+        self._study_counter = tk.Label(
+            self.container, text="", font=("Arial", 11)
+        )
+        self._study_counter.pack()
+
+        self._study_score_label = tk.Label(
+            self.container, text="", font=("Arial", 10), fg="gray"
+        )
+        self._study_score_label.pack()
+
+        self._study_card_frame = tk.Frame(self.container, bd=2, relief=tk.GROOVE)
+        self._study_card_frame.pack(fill=tk.BOTH, expand=True, padx=40, pady=15)
+
+        self._study_side_label = tk.Label(
+            self._study_card_frame, text="FRONT", font=("Arial", 10), fg="gray"
+        )
+        self._study_side_label.pack(pady=(10, 0))
+
+        self._study_label = tk.Label(
+            self._study_card_frame,
+            text="",
+            font=("Arial", 16),
+            wraplength=400,
+            justify=tk.CENTER,
+        )
+        self._study_label.pack(expand=True, padx=20, pady=(10, 5))
+
+        self._study_mc_frame = tk.Frame(self._study_card_frame)
+        self._study_mc_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
+
+        self._study_feedback = tk.Label(
+            self._study_card_frame, text="", font=("Arial", 11)
+        )
+        self._study_feedback.pack(pady=(0, 10))
+
+        self._study_card_frame.bind("<Button-1>", lambda e: self._flip_card())
+        self._study_label.bind("<Button-1>", lambda e: self._flip_card())
+        self._study_side_label.bind("<Button-1>", lambda e: self._flip_card())
+
+        nav_frame = tk.Frame(self.container)
+        nav_frame.pack(pady=(0, 5))
+
+        self._prev_btn = tk.Button(
+            nav_frame, text="Previous", command=self._prev_card, width=12
+        )
+        self._prev_btn.pack(side=tk.LEFT, padx=5)
+
+        self._next_btn = tk.Button(
+            nav_frame, text="Next", command=self._next_card, width=12
+        )
+        self._next_btn.pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            nav_frame, text="Edit", command=self._edit_study_card, width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            nav_frame,
+            text="Back",
+            command=self._study_back_callback,
+            width=12,
+        ).pack(side=tk.LEFT, padx=5)
+
         self._action_frame = tk.Frame(self.container)
         self._action_frame.pack(pady=(0, 20))
 
