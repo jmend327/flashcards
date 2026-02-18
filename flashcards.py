@@ -33,6 +33,24 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS card_tags (
+                card_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY (card_id, tag_id),
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS deck_tags (
+                deck_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY (deck_id, tag_id),
+                FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            );
         """)
         self.conn.commit()
         self._migrate()
@@ -55,6 +73,8 @@ class Database:
             self.conn.execute("ALTER TABLE cards ADD COLUMN choices TEXT")
             self.conn.commit()
 
+    # ── Decks ──────────────────────────────────────────────────
+
     def get_decks(self):
         cur = self.conn.execute("SELECT id, name FROM decks ORDER BY name")
         return cur.fetchall()
@@ -62,6 +82,7 @@ class Database:
     def create_deck(self, name):
         self.conn.execute("INSERT INTO decks (name) VALUES (?)", (name,))
         self.conn.commit()
+        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     def rename_deck(self, deck_id, name):
         self.conn.execute("UPDATE decks SET name = ? WHERE id = ?", (name, deck_id))
@@ -70,6 +91,8 @@ class Database:
     def delete_deck(self, deck_id):
         self.conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
         self.conn.commit()
+
+    # ── Cards ──────────────────────────────────────────────────
 
     def get_cards(self, deck_id):
         cur = self.conn.execute(
@@ -108,6 +131,7 @@ class Database:
             (deck_id, front, back, card_type, choices_json),
         )
         self.conn.commit()
+        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     def update_card(self, card_id, front, back, card_type="free", choices=None):
         choices_json = json.dumps(choices) if choices else None
@@ -120,6 +144,110 @@ class Database:
 
     def delete_card(self, card_id):
         self.conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+        self.conn.commit()
+
+    # ── Tags ───────────────────────────────────────────────────
+
+    def get_or_create_tag(self, name):
+        name = name.strip().lower()
+        row = self.conn.execute(
+            "SELECT id FROM tags WHERE name = ?", (name,)
+        ).fetchone()
+        if row:
+            return row[0]
+        self.conn.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+        self.conn.commit()
+        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def get_all_tags(self):
+        cur = self.conn.execute("SELECT id, name FROM tags ORDER BY name")
+        return cur.fetchall()
+
+    def set_card_tags(self, card_id, tag_names):
+        self.conn.execute("DELETE FROM card_tags WHERE card_id = ?", (card_id,))
+        for name in tag_names:
+            name = name.strip()
+            if not name:
+                continue
+            tag_id = self.get_or_create_tag(name)
+            self.conn.execute(
+                "INSERT OR IGNORE INTO card_tags (card_id, tag_id) VALUES (?, ?)",
+                (card_id, tag_id),
+            )
+        self.conn.commit()
+        self._cleanup_orphan_tags()
+
+    def get_card_tags(self, card_id):
+        cur = self.conn.execute(
+            "SELECT t.name FROM tags t"
+            " JOIN card_tags ct ON t.id = ct.tag_id"
+            " WHERE ct.card_id = ? ORDER BY t.name",
+            (card_id,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def set_deck_tags(self, deck_id, tag_names):
+        self.conn.execute("DELETE FROM deck_tags WHERE deck_id = ?", (deck_id,))
+        for name in tag_names:
+            name = name.strip()
+            if not name:
+                continue
+            tag_id = self.get_or_create_tag(name)
+            self.conn.execute(
+                "INSERT OR IGNORE INTO deck_tags (deck_id, tag_id) VALUES (?, ?)",
+                (deck_id, tag_id),
+            )
+        self.conn.commit()
+        self._cleanup_orphan_tags()
+
+    def get_deck_tags(self, deck_id):
+        cur = self.conn.execute(
+            "SELECT t.name FROM tags t"
+            " JOIN deck_tags dt ON t.id = dt.tag_id"
+            " WHERE dt.deck_id = ? ORDER BY t.name",
+            (deck_id,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def get_cards_by_tag(self, tag_name):
+        cur = self.conn.execute(
+            "SELECT c.id, c.front, c.back, c.correct_count, c.incorrect_count,"
+            " c.card_type, c.choices"
+            " FROM cards c"
+            " JOIN card_tags ct ON c.id = ct.card_id"
+            " JOIN tags t ON t.id = ct.tag_id"
+            " WHERE t.name = ?",
+            (tag_name,),
+        )
+        return cur.fetchall()
+
+    def get_cards_by_deck_tag(self, tag_name):
+        """Get all cards in decks that have a given tag."""
+        cur = self.conn.execute(
+            "SELECT c.id, c.front, c.back, c.correct_count, c.incorrect_count,"
+            " c.card_type, c.choices"
+            " FROM cards c"
+            " JOIN deck_tags dt ON c.deck_id = dt.deck_id"
+            " JOIN tags t ON t.id = dt.tag_id"
+            " WHERE t.name = ?",
+            (tag_name,),
+        )
+        return cur.fetchall()
+
+    def get_all_tags_with_counts(self):
+        cur = self.conn.execute(
+            "SELECT t.name,"
+            " (SELECT COUNT(*) FROM card_tags ct WHERE ct.tag_id = t.id),"
+            " (SELECT COUNT(*) FROM deck_tags dt WHERE dt.tag_id = t.id)"
+            " FROM tags t ORDER BY t.name"
+        )
+        return cur.fetchall()
+
+    def _cleanup_orphan_tags(self):
+        self.conn.execute(
+            "DELETE FROM tags WHERE id NOT IN"
+            " (SELECT tag_id FROM card_tags UNION SELECT tag_id FROM deck_tags)"
+        )
         self.conn.commit()
 
     def close(self):
@@ -171,12 +299,14 @@ class App:
         self.decks = self.db.get_decks()
         for deck_id, name in self.decks:
             count = self.db.card_count(deck_id)
-            self.deck_listbox.insert(tk.END, f"{name}  ({count} cards)")
+            dtags = self.db.get_deck_tags(deck_id)
+            tag_str = f"  [{', '.join(dtags)}]" if dtags else ""
+            self.deck_listbox.insert(tk.END, f"{name}  ({count} cards){tag_str}")
 
         self.deck_listbox.bind("<Double-Button-1>", lambda e: self._open_deck())
 
         btn_frame = tk.Frame(self.container)
-        btn_frame.pack(pady=(0, 20))
+        btn_frame.pack(pady=(0, 5))
 
         tk.Button(btn_frame, text="New Deck", command=self._new_deck, width=12).pack(
             side=tk.LEFT, padx=5
@@ -189,6 +319,16 @@ class App:
         ).pack(side=tk.LEFT, padx=5)
         tk.Button(
             btn_frame, text="Delete", command=self._delete_deck, width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        btn_frame2 = tk.Frame(self.container)
+        btn_frame2.pack(pady=(0, 20))
+
+        tk.Button(
+            btn_frame2, text="Deck Tags", command=self._edit_deck_tags, width=12
+        ).pack(side=tk.LEFT, padx=5)
+        tk.Button(
+            btn_frame2, text="Study by Tag", command=self.show_tag_picker, width=12
         ).pack(side=tk.LEFT, padx=5)
 
     def _selected_deck(self):
@@ -231,17 +371,125 @@ class App:
             return
         self.show_deck(deck[0], deck[1])
 
+    def _edit_deck_tags(self):
+        deck = self._selected_deck()
+        if not deck:
+            return
+        current = self.db.get_deck_tags(deck[0])
+        result = simpledialog.askstring(
+            "Deck Tags",
+            f"Tags for '{deck[1]}' (comma-separated):",
+            initialvalue=", ".join(current),
+        )
+        if result is not None:
+            tags = [t.strip() for t in result.split(",") if t.strip()]
+            self.db.set_deck_tags(deck[0], tags)
+            self.show_home()
+
+    # ── Tag Picker View ────────────────────────────────────────
+
+    def show_tag_picker(self):
+        tag_data = self.db.get_all_tags_with_counts()
+        if not tag_data:
+            messagebox.showinfo("No Tags", "No tags have been created yet.")
+            return
+
+        self._clear()
+
+        tk.Label(
+            self.container, text="Study by Tag", font=("Arial", 20, "bold")
+        ).pack(pady=(20, 10))
+
+        tk.Label(
+            self.container,
+            text="Select a tag to study all matching cards:",
+            font=("Arial", 11),
+        ).pack()
+
+        list_frame = tk.Frame(self.container)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(10, 10))
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._tag_listbox = tk.Listbox(
+            list_frame, font=("Arial", 14), yscrollcommand=scrollbar.set
+        )
+        self._tag_listbox.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self._tag_listbox.yview)
+
+        self._tag_data = tag_data
+        for tag_name, card_count, deck_count in tag_data:
+            parts = []
+            if card_count:
+                parts.append(f"{card_count} cards")
+            if deck_count:
+                parts.append(f"{deck_count} decks")
+            info = ", ".join(parts) if parts else "unused"
+            self._tag_listbox.insert(tk.END, f"{tag_name}  ({info})")
+
+        self._tag_listbox.bind(
+            "<Double-Button-1>", lambda e: self._study_selected_tag()
+        )
+
+        btn_frame = tk.Frame(self.container)
+        btn_frame.pack(pady=(0, 20))
+
+        tk.Button(
+            btn_frame, text="Study", command=self._study_selected_tag, width=12
+        ).pack(side=tk.LEFT, padx=5)
+        tk.Button(
+            btn_frame, text="Back", command=self.show_home, width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+    def _study_selected_tag(self):
+        sel = self._tag_listbox.curselection()
+        if not sel:
+            messagebox.showwarning("No Selection", "Please select a tag.")
+            return
+        tag_name = self._tag_data[sel[0]][0]
+
+        # Collect cards tagged directly + cards in tagged decks
+        card_ids_seen = set()
+        cards = []
+        for card in self.db.get_cards_by_tag(tag_name):
+            if card[C_ID] not in card_ids_seen:
+                card_ids_seen.add(card[C_ID])
+                cards.append(card)
+        for card in self.db.get_cards_by_deck_tag(tag_name):
+            if card[C_ID] not in card_ids_seen:
+                card_ids_seen.add(card[C_ID])
+                cards.append(card)
+
+        if not cards:
+            messagebox.showinfo(
+                "No Cards", f"No cards found for tag '{tag_name}'."
+            )
+            return
+
+        self._start_study(cards, f"Tag: {tag_name}", self.show_tag_picker)
+
     # ── Deck View ──────────────────────────────────────────────
 
     def show_deck(self, deck_id, deck_name):
         self._clear()
 
+        # Header with deck tags
         tk.Label(
             self.container, text=deck_name, font=("Arial", 20, "bold")
-        ).pack(pady=(20, 10))
+        ).pack(pady=(20, 5))
+
+        dtags = self.db.get_deck_tags(deck_id)
+        if dtags:
+            tk.Label(
+                self.container,
+                text=f"Tags: {', '.join(dtags)}",
+                font=("Arial", 10),
+                fg="gray",
+            ).pack()
 
         list_frame = tk.Frame(self.container)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(10, 10))
 
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -257,15 +505,19 @@ class App:
             front = card[C_FRONT]
             correct, incorrect = card[C_CORRECT], card[C_INCORRECT]
             card_type = card[C_TYPE]
-            tag = "[MC] " if card_type == "mc" else ""
+            ctags = self.db.get_card_tags(card[C_ID])
+
+            prefix = "[MC] " if card_type == "mc" else ""
+            tag_str = f"  [{', '.join(ctags)}]" if ctags else ""
             total = correct + incorrect
             if total > 0:
                 pct = round(correct / total * 100)
-                self.card_listbox.insert(
-                    tk.END, f"{tag}{front}  [{correct}/{total} — {pct}%]"
-                )
+                score_str = f"  {correct}/{total} — {pct}%"
             else:
-                self.card_listbox.insert(tk.END, f"{tag}{front}")
+                score_str = ""
+            self.card_listbox.insert(
+                tk.END, f"{prefix}{front}{tag_str}{score_str}"
+            )
 
         btn_frame = tk.Frame(self.container)
         btn_frame.pack(pady=(0, 5))
@@ -295,7 +547,7 @@ class App:
         tk.Button(
             btn_frame2,
             text="Study",
-            command=lambda: self.show_study(deck_id, deck_name),
+            command=lambda: self._study_deck(deck_id, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
         tk.Button(
@@ -321,6 +573,17 @@ class App:
         ):
             self.db.delete_card(card[C_ID])
             self.show_deck(deck_id, deck_name)
+
+    def _study_deck(self, deck_id, deck_name):
+        cards = self.db.get_cards(deck_id)
+        if not cards:
+            messagebox.showinfo("No Cards", "This deck has no cards to study.")
+            return
+        self._start_study(
+            cards,
+            f"Studying: {deck_name}",
+            lambda: self.show_deck(deck_id, deck_name),
+        )
 
     # ── Card Form View ─────────────────────────────────────────
 
@@ -350,7 +613,6 @@ class App:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(40, 0), pady=10)
         form_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 40), pady=10)
 
-        # Bind mousewheel to canvas
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
@@ -404,10 +666,15 @@ class App:
             mc_btn_frame, text="- Remove Last", command=lambda: _remove_choice_entry()
         ).pack(side=tk.LEFT)
 
+        # Tags
+        tk.Label(form, text="Tags (comma-separated):", font=("Arial", 12)).pack(
+            anchor=tk.W
+        )
+        tags_entry = tk.Entry(form, font=("Arial", 12))
+        tags_entry.pack(fill=tk.X, pady=(0, 10))
+
         def _add_choice_entry(value=""):
-            entry = tk.Entry(
-                self._mc_entries_frame, font=("Arial", 12)
-            )
+            entry = tk.Entry(self._mc_entries_frame, font=("Arial", 12))
             entry.pack(fill=tk.X, pady=2)
             if value:
                 entry.insert(0, value)
@@ -439,6 +706,8 @@ class App:
                 for wc in wrong_choices:
                     _add_choice_entry(wc)
             _toggle_type()
+            ctags = self.db.get_card_tags(card[C_ID])
+            tags_entry.insert(0, ", ".join(ctags))
 
         def save():
             front = front_text.get("1.0", tk.END).strip()
@@ -462,12 +731,19 @@ class App:
                     return
                 choices = wrong
 
+            tag_names = [
+                t.strip() for t in tags_entry.get().split(",") if t.strip()
+            ]
+
             if editing:
                 self.db.update_card(card[C_ID], front, back, card_type, choices)
+                self.db.set_card_tags(card[C_ID], tag_names)
             else:
-                self.db.create_card(deck_id, front, back, card_type, choices)
+                card_id = self.db.create_card(
+                    deck_id, front, back, card_type, choices
+                )
+                self.db.set_card_tags(card_id, tag_names)
 
-            # Unbind mousewheel before leaving
             canvas.unbind_all("<MouseWheel>")
             self.show_deck(deck_id, deck_name)
 
@@ -489,24 +765,18 @@ class App:
 
     # ── Study View ─────────────────────────────────────────────
 
-    def show_study(self, deck_id, deck_name):
-        cards = self.db.get_cards(deck_id)
-        if not cards:
-            messagebox.showinfo("No Cards", "This deck has no cards to study.")
-            return
-
+    def _start_study(self, cards, title, back_callback):
         self._clear()
         random.shuffle(cards)
 
         self._study_cards = cards
-        self._study_deck_id = deck_id
-        self._study_deck_name = deck_name
         self._study_index = 0
         self._study_showing_front = True
         self._study_scored = False
+        self._study_back_callback = back_callback
 
         tk.Label(
-            self.container, text=f"Studying: {deck_name}", font=("Arial", 16)
+            self.container, text=title, font=("Arial", 16)
         ).pack(pady=(20, 5))
 
         self._study_counter = tk.Label(
@@ -547,7 +817,7 @@ class App:
         )
         self._study_feedback.pack(pady=(0, 10))
 
-        # Click to flip (only for free-response cards)
+        # Click to flip (free-response only)
         self._study_card_frame.bind("<Button-1>", lambda e: self._flip_card())
         self._study_label.bind("<Button-1>", lambda e: self._flip_card())
         self._study_side_label.bind("<Button-1>", lambda e: self._flip_card())
@@ -569,15 +839,19 @@ class App:
         tk.Button(
             nav_frame,
             text="Back",
-            command=lambda: self.show_deck(deck_id, deck_name),
+            command=back_callback,
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
-        # Action row (Flip or Correct/Incorrect — for free-response only)
+        # Action row (Flip or Correct/Incorrect)
         self._action_frame = tk.Frame(self.container)
         self._action_frame.pack(pady=(0, 20))
 
         self._update_study_display()
+
+    # kept for backward compat with deck-based study
+    def show_study(self, deck_id, deck_name):
+        self._study_deck(deck_id, deck_name)
 
     def _rebuild_action_buttons(self):
         for widget in self._action_frame.winfo_children():
@@ -585,7 +859,6 @@ class App:
 
         card = self._study_cards[self._study_index]
 
-        # MC cards use the choice buttons for scoring, no action row needed
         if card[C_TYPE] == "mc":
             return
 
@@ -644,7 +917,6 @@ class App:
         card = self._study_cards[self._study_index]
         is_mc = card[C_TYPE] == "mc"
 
-        # Question text
         self._study_label.config(text=card[C_FRONT])
 
         if is_mc:
@@ -671,21 +943,18 @@ class App:
 
         self._study_feedback.config(text="")
 
-        # Build MC choices or action buttons
         for widget in self._study_mc_frame.winfo_children():
             widget.destroy()
 
         if is_mc and not self._study_scored:
             self._rebuild_mc_choices()
-        elif is_mc and self._study_scored:
-            pass  # feedback already shown
 
         self._rebuild_action_buttons()
 
     def _flip_card(self):
         card = self._study_cards[self._study_index]
         if card[C_TYPE] == "mc":
-            return  # MC cards don't flip
+            return
         if self._study_showing_front:
             self._study_showing_front = False
             self._update_study_display()
@@ -713,7 +982,6 @@ class App:
         self._study_cards[self._study_index] = tuple(updated)
         self._study_scored = True
 
-        # Color the buttons
         for btn in self._mc_choice_btns:
             if btn["text"] == self._mc_correct_answer:
                 btn.config(bg="green", fg="white")
