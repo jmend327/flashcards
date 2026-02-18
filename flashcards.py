@@ -397,30 +397,22 @@ class App:
         self._study_counter.config(
             text=f"Card {self._study_index + 1} of {len(self._study_cards)}"
         )
-        self._prev_btn.config(
-            state=tk.NORMAL if self._study_index > 0 else tk.DISABLED
-        )
-        self._next_btn.config(
-            state=tk.NORMAL
-            if self._study_index < len(self._study_cards) - 1
-            else tk.DISABLED
-        )
+        self._prev_btn.config(state=tk.NORMAL)
+        self._next_btn.config(state=tk.NORMAL)
 
     def _flip_card(self):
         self._study_showing_front = not self._study_showing_front
         self._update_study_display()
 
     def _next_card(self):
-        if self._study_index < len(self._study_cards) - 1:
-            self._study_index += 1
-            self._study_showing_front = True
-            self._update_study_display()
+        self._study_index = (self._study_index + 1) % len(self._study_cards)
+        self._study_showing_front = True
+        self._update_study_display()
 
     def _prev_card(self):
-        if self._study_index > 0:
-            self._study_index -= 1
-            self._study_showing_front = True
-            self._update_study_display()
+        self._study_index = (self._study_index - 1) % len(self._study_cards)
+        self._study_showing_front = True
+        self._update_study_display()
 
     def on_close(self):
         self.db.close()
