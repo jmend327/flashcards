@@ -25,11 +25,26 @@ class Database:
                 deck_id INTEGER NOT NULL,
                 front TEXT NOT NULL,
                 back TEXT NOT NULL,
+                correct_count INTEGER NOT NULL DEFAULT 0,
+                incorrect_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE
             );
         """)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        cur = self.conn.execute("PRAGMA table_info(cards)")
+        columns = {row[1] for row in cur.fetchall()}
+        if "correct_count" not in columns:
+            self.conn.execute(
+                "ALTER TABLE cards ADD COLUMN correct_count INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.execute(
+                "ALTER TABLE cards ADD COLUMN incorrect_count INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.commit()
 
     def get_decks(self):
         cur = self.conn.execute("SELECT id, name FROM decks ORDER BY name")
@@ -49,10 +64,25 @@ class Database:
 
     def get_cards(self, deck_id):
         cur = self.conn.execute(
-            "SELECT id, front, back FROM cards WHERE deck_id = ? ORDER BY created_at",
+            "SELECT id, front, back, correct_count, incorrect_count"
+            " FROM cards WHERE deck_id = ? ORDER BY created_at",
             (deck_id,),
         )
         return cur.fetchall()
+
+    def record_correct(self, card_id):
+        self.conn.execute(
+            "UPDATE cards SET correct_count = correct_count + 1 WHERE id = ?",
+            (card_id,),
+        )
+        self.conn.commit()
+
+    def record_incorrect(self, card_id):
+        self.conn.execute(
+            "UPDATE cards SET incorrect_count = incorrect_count + 1 WHERE id = ?",
+            (card_id,),
+        )
+        self.conn.commit()
 
     def card_count(self, deck_id):
         cur = self.conn.execute(
@@ -205,8 +235,15 @@ class App:
         scrollbar.config(command=self.card_listbox.yview)
 
         self.cards = self.db.get_cards(deck_id)
-        for _, front, _ in self.cards:
-            self.card_listbox.insert(tk.END, front)
+        for _, front, _, correct, incorrect in self.cards:
+            total = correct + incorrect
+            if total > 0:
+                pct = round(correct / total * 100)
+                self.card_listbox.insert(
+                    tk.END, f"{front}  [{correct}/{total} — {pct}%]"
+                )
+            else:
+                self.card_listbox.insert(tk.END, front)
 
         btn_frame = tk.Frame(self.container)
         btn_frame.pack(pady=(0, 5))
@@ -326,8 +363,11 @@ class App:
         random.shuffle(cards)
 
         self._study_cards = cards
+        self._study_deck_id = deck_id
+        self._study_deck_name = deck_name
         self._study_index = 0
         self._study_showing_front = True
+        self._study_scored = False
 
         tk.Label(
             self.container, text=f"Studying: {deck_name}", font=("Arial", 16)
@@ -337,6 +377,11 @@ class App:
             self.container, text="", font=("Arial", 11)
         )
         self._study_counter.pack()
+
+        self._study_score_label = tk.Label(
+            self.container, text="", font=("Arial", 10), fg="gray"
+        )
+        self._study_score_label.pack()
 
         card_frame = tk.Frame(self.container, bd=2, relief=tk.GROOVE)
         card_frame.pack(fill=tk.BOTH, expand=True, padx=40, pady=15)
@@ -359,31 +404,60 @@ class App:
         self._study_label.bind("<Button-1>", lambda e: self._flip_card())
         self._study_side_label.bind("<Button-1>", lambda e: self._flip_card())
 
-        btn_frame = tk.Frame(self.container)
-        btn_frame.pack(pady=(0, 20))
+        # Navigation row
+        nav_frame = tk.Frame(self.container)
+        nav_frame.pack(pady=(0, 5))
 
         self._prev_btn = tk.Button(
-            btn_frame, text="Previous", command=self._prev_card, width=12
+            nav_frame, text="Previous", command=self._prev_card, width=12
         )
         self._prev_btn.pack(side=tk.LEFT, padx=5)
 
-        tk.Button(
-            btn_frame, text="Flip", command=self._flip_card, width=12
-        ).pack(side=tk.LEFT, padx=5)
-
         self._next_btn = tk.Button(
-            btn_frame, text="Next", command=self._next_card, width=12
+            nav_frame, text="Next", command=self._next_card, width=12
         )
         self._next_btn.pack(side=tk.LEFT, padx=5)
 
         tk.Button(
-            btn_frame,
+            nav_frame,
             text="Back",
             command=lambda: self.show_deck(deck_id, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
+        # Action row (Flip or Correct/Incorrect)
+        self._action_frame = tk.Frame(self.container)
+        self._action_frame.pack(pady=(0, 20))
+
         self._update_study_display()
+
+    def _rebuild_action_buttons(self):
+        for widget in self._action_frame.winfo_children():
+            widget.destroy()
+
+        if self._study_showing_front:
+            tk.Button(
+                self._action_frame, text="Flip", command=self._flip_card, width=12
+            ).pack(side=tk.LEFT, padx=5)
+        elif not self._study_scored:
+            tk.Button(
+                self._action_frame,
+                text="Correct",
+                command=self._mark_correct,
+                width=12,
+                fg="green",
+            ).pack(side=tk.LEFT, padx=5)
+            tk.Button(
+                self._action_frame,
+                text="Incorrect",
+                command=self._mark_incorrect,
+                width=12,
+                fg="red",
+            ).pack(side=tk.LEFT, padx=5)
+        else:
+            tk.Label(
+                self._action_frame, text="Scored!", font=("Arial", 11), fg="gray"
+            ).pack(side=tk.LEFT, padx=5)
 
     def _update_study_display(self):
         card = self._study_cards[self._study_index]
@@ -397,21 +471,50 @@ class App:
         self._study_counter.config(
             text=f"Card {self._study_index + 1} of {len(self._study_cards)}"
         )
-        self._prev_btn.config(state=tk.NORMAL)
-        self._next_btn.config(state=tk.NORMAL)
+
+        correct, incorrect = card[3], card[4]
+        total = correct + incorrect
+        if total > 0:
+            pct = round(correct / total * 100)
+            self._study_score_label.config(
+                text=f"Score: {correct}/{total} ({pct}%)"
+            )
+        else:
+            self._study_score_label.config(text="Score: no attempts yet")
+
+        self._rebuild_action_buttons()
 
     def _flip_card(self):
-        self._study_showing_front = not self._study_showing_front
+        if self._study_showing_front:
+            self._study_showing_front = False
+            self._update_study_display()
+
+    def _mark_correct(self):
+        card = self._study_cards[self._study_index]
+        self.db.record_correct(card[0])
+        updated = (card[0], card[1], card[2], card[3] + 1, card[4])
+        self._study_cards[self._study_index] = updated
+        self._study_scored = True
+        self._update_study_display()
+
+    def _mark_incorrect(self):
+        card = self._study_cards[self._study_index]
+        self.db.record_incorrect(card[0])
+        updated = (card[0], card[1], card[2], card[3], card[4] + 1)
+        self._study_cards[self._study_index] = updated
+        self._study_scored = True
         self._update_study_display()
 
     def _next_card(self):
         self._study_index = (self._study_index + 1) % len(self._study_cards)
         self._study_showing_front = True
+        self._study_scored = False
         self._update_study_display()
 
     def _prev_card(self):
         self._study_index = (self._study_index - 1) % len(self._study_cards)
         self._study_showing_front = True
+        self._study_scored = False
         self._update_study_display()
 
     def on_close(self):
