@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 import sqlite3
+import json
 import os
 import random
 
@@ -25,6 +26,8 @@ class Database:
                 deck_id INTEGER NOT NULL,
                 front TEXT NOT NULL,
                 back TEXT NOT NULL,
+                card_type TEXT NOT NULL DEFAULT 'free',
+                choices TEXT,
                 correct_count INTEGER NOT NULL DEFAULT 0,
                 incorrect_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -45,6 +48,12 @@ class Database:
                 "ALTER TABLE cards ADD COLUMN incorrect_count INTEGER NOT NULL DEFAULT 0"
             )
             self.conn.commit()
+        if "card_type" not in columns:
+            self.conn.execute(
+                "ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'free'"
+            )
+            self.conn.execute("ALTER TABLE cards ADD COLUMN choices TEXT")
+            self.conn.commit()
 
     def get_decks(self):
         cur = self.conn.execute("SELECT id, name FROM decks ORDER BY name")
@@ -64,7 +73,8 @@ class Database:
 
     def get_cards(self, deck_id):
         cur = self.conn.execute(
-            "SELECT id, front, back, correct_count, incorrect_count"
+            "SELECT id, front, back, correct_count, incorrect_count,"
+            " card_type, choices"
             " FROM cards WHERE deck_id = ? ORDER BY created_at",
             (deck_id,),
         )
@@ -90,17 +100,21 @@ class Database:
         )
         return cur.fetchone()[0]
 
-    def create_card(self, deck_id, front, back):
+    def create_card(self, deck_id, front, back, card_type="free", choices=None):
+        choices_json = json.dumps(choices) if choices else None
         self.conn.execute(
-            "INSERT INTO cards (deck_id, front, back) VALUES (?, ?, ?)",
-            (deck_id, front, back),
+            "INSERT INTO cards (deck_id, front, back, card_type, choices)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (deck_id, front, back, card_type, choices_json),
         )
         self.conn.commit()
 
-    def update_card(self, card_id, front, back):
+    def update_card(self, card_id, front, back, card_type="free", choices=None):
+        choices_json = json.dumps(choices) if choices else None
         self.conn.execute(
-            "UPDATE cards SET front = ?, back = ? WHERE id = ?",
-            (front, back, card_id),
+            "UPDATE cards SET front = ?, back = ?, card_type = ?, choices = ?"
+            " WHERE id = ?",
+            (front, back, card_type, choices_json, card_id),
         )
         self.conn.commit()
 
@@ -112,12 +126,16 @@ class Database:
         self.conn.close()
 
 
+# Card tuple indices
+C_ID, C_FRONT, C_BACK, C_CORRECT, C_INCORRECT, C_TYPE, C_CHOICES = range(7)
+
+
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Flashcards")
-        self.root.geometry("600x500")
-        self.root.minsize(400, 350)
+        self.root.geometry("600x550")
+        self.root.minsize(400, 400)
         self.db = Database(DB_PATH)
 
         self.container = tk.Frame(root)
@@ -235,15 +253,19 @@ class App:
         scrollbar.config(command=self.card_listbox.yview)
 
         self.cards = self.db.get_cards(deck_id)
-        for _, front, _, correct, incorrect in self.cards:
+        for card in self.cards:
+            front = card[C_FRONT]
+            correct, incorrect = card[C_CORRECT], card[C_INCORRECT]
+            card_type = card[C_TYPE]
+            tag = "[MC] " if card_type == "mc" else ""
             total = correct + incorrect
             if total > 0:
                 pct = round(correct / total * 100)
                 self.card_listbox.insert(
-                    tk.END, f"{front}  [{correct}/{total} — {pct}%]"
+                    tk.END, f"{tag}{front}  [{correct}/{total} — {pct}%]"
                 )
             else:
-                self.card_listbox.insert(tk.END, front)
+                self.card_listbox.insert(tk.END, f"{tag}{front}")
 
         btn_frame = tk.Frame(self.container)
         btn_frame.pack(pady=(0, 5))
@@ -294,8 +316,10 @@ class App:
             messagebox.showwarning("No Selection", "Please select a card.")
             return
         card = self.cards[sel[0]]
-        if messagebox.askyesno("Delete Card", f"Delete this card?\n\n{card[1]}"):
-            self.db.delete_card(card[0])
+        if messagebox.askyesno(
+            "Delete Card", f"Delete this card?\n\n{card[C_FRONT]}"
+        ):
+            self.db.delete_card(card[C_ID])
             self.show_deck(deck_id, deck_name)
 
     # ── Card Form View ─────────────────────────────────────────
@@ -309,33 +333,142 @@ class App:
             self.container, text=title, font=("Arial", 20, "bold")
         ).pack(pady=(20, 10))
 
-        form = tk.Frame(self.container)
-        form.pack(fill=tk.BOTH, expand=True, padx=40, pady=10)
+        # Scrollable form area
+        canvas = tk.Canvas(self.container)
+        form_scrollbar = tk.Scrollbar(
+            self.container, orient=tk.VERTICAL, command=canvas.yview
+        )
+        form_outer = tk.Frame(canvas)
 
-        tk.Label(form, text="Front:", font=("Arial", 12)).pack(anchor=tk.W)
-        front_text = tk.Text(form, height=4, font=("Arial", 12), wrap=tk.WORD)
+        form_outer.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.create_window((0, 0), window=form_outer, anchor=tk.NW)
+        canvas.configure(yscrollcommand=form_scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(40, 0), pady=10)
+        form_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 40), pady=10)
+
+        # Bind mousewheel to canvas
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        form = form_outer
+
+        # Card type selector
+        tk.Label(form, text="Card Type:", font=("Arial", 12)).pack(anchor=tk.W)
+        type_var = tk.StringVar(value="free")
+        type_frame = tk.Frame(form)
+        type_frame.pack(anchor=tk.W, pady=(0, 10))
+
+        tk.Radiobutton(
+            type_frame, text="Free Response", variable=type_var, value="free",
+            font=("Arial", 11), command=lambda: _toggle_type(),
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        tk.Radiobutton(
+            type_frame, text="Multiple Choice", variable=type_var, value="mc",
+            font=("Arial", 11), command=lambda: _toggle_type(),
+        ).pack(side=tk.LEFT)
+
+        # Front
+        tk.Label(form, text="Front (Question):", font=("Arial", 12)).pack(anchor=tk.W)
+        front_text = tk.Text(form, height=3, font=("Arial", 12), wrap=tk.WORD)
         front_text.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(form, text="Back:", font=("Arial", 12)).pack(anchor=tk.W)
-        back_text = tk.Text(form, height=4, font=("Arial", 12), wrap=tk.WORD)
+        # Back / correct answer
+        self._back_label = tk.Label(form, text="Back (Answer):", font=("Arial", 12))
+        self._back_label.pack(anchor=tk.W)
+        back_text = tk.Text(form, height=3, font=("Arial", 12), wrap=tk.WORD)
         back_text.pack(fill=tk.X, pady=(0, 10))
 
+        # MC wrong choices area
+        self._mc_frame = tk.Frame(form)
+        self._mc_entries = []
+
+        tk.Label(
+            self._mc_frame, text="Wrong Choices:", font=("Arial", 12)
+        ).pack(anchor=tk.W)
+
+        self._mc_entries_frame = tk.Frame(self._mc_frame)
+        self._mc_entries_frame.pack(fill=tk.X)
+
+        mc_btn_frame = tk.Frame(self._mc_frame)
+        mc_btn_frame.pack(anchor=tk.W, pady=(5, 10))
+        tk.Button(
+            mc_btn_frame, text="+ Add Choice", command=lambda: _add_choice_entry()
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        tk.Button(
+            mc_btn_frame, text="- Remove Last", command=lambda: _remove_choice_entry()
+        ).pack(side=tk.LEFT)
+
+        def _add_choice_entry(value=""):
+            entry = tk.Entry(
+                self._mc_entries_frame, font=("Arial", 12)
+            )
+            entry.pack(fill=tk.X, pady=2)
+            if value:
+                entry.insert(0, value)
+            self._mc_entries.append(entry)
+
+        def _remove_choice_entry():
+            if self._mc_entries:
+                self._mc_entries[-1].destroy()
+                self._mc_entries.pop()
+
+        def _toggle_type():
+            if type_var.get() == "mc":
+                self._back_label.config(text="Correct Answer:")
+                self._mc_frame.pack(fill=tk.X, after=back_text)
+                if not self._mc_entries:
+                    for _ in range(3):
+                        _add_choice_entry()
+            else:
+                self._back_label.config(text="Back (Answer):")
+                self._mc_frame.pack_forget()
+
+        # Pre-fill if editing
         if editing:
-            front_text.insert("1.0", card[1])
-            back_text.insert("1.0", card[2])
+            front_text.insert("1.0", card[C_FRONT])
+            back_text.insert("1.0", card[C_BACK])
+            type_var.set(card[C_TYPE])
+            if card[C_TYPE] == "mc" and card[C_CHOICES]:
+                wrong_choices = json.loads(card[C_CHOICES])
+                for wc in wrong_choices:
+                    _add_choice_entry(wc)
+            _toggle_type()
 
         def save():
             front = front_text.get("1.0", tk.END).strip()
             back = back_text.get("1.0", tk.END).strip()
+            card_type = type_var.get()
+
             if not front or not back:
                 messagebox.showwarning(
-                    "Missing Fields", "Both front and back are required."
+                    "Missing Fields", "Front and answer are required."
                 )
                 return
+
+            choices = None
+            if card_type == "mc":
+                wrong = [e.get().strip() for e in self._mc_entries if e.get().strip()]
+                if len(wrong) < 1:
+                    messagebox.showwarning(
+                        "Missing Choices",
+                        "Add at least 1 wrong choice for multiple choice.",
+                    )
+                    return
+                choices = wrong
+
             if editing:
-                self.db.update_card(card[0], front, back)
+                self.db.update_card(card[C_ID], front, back, card_type, choices)
             else:
-                self.db.create_card(deck_id, front, back)
+                self.db.create_card(deck_id, front, back, card_type, choices)
+
+            # Unbind mousewheel before leaving
+            canvas.unbind_all("<MouseWheel>")
             self.show_deck(deck_id, deck_name)
 
         btn_frame = tk.Frame(self.container)
@@ -347,7 +480,10 @@ class App:
         tk.Button(
             btn_frame,
             text="Cancel",
-            command=lambda: self.show_deck(deck_id, deck_name),
+            command=lambda: (
+                canvas.unbind_all("<MouseWheel>"),
+                self.show_deck(deck_id, deck_name),
+            ),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
@@ -383,24 +519,36 @@ class App:
         )
         self._study_score_label.pack()
 
-        card_frame = tk.Frame(self.container, bd=2, relief=tk.GROOVE)
-        card_frame.pack(fill=tk.BOTH, expand=True, padx=40, pady=15)
+        # Card display area
+        self._study_card_frame = tk.Frame(self.container, bd=2, relief=tk.GROOVE)
+        self._study_card_frame.pack(fill=tk.BOTH, expand=True, padx=40, pady=15)
 
         self._study_side_label = tk.Label(
-            card_frame, text="FRONT", font=("Arial", 10), fg="gray"
+            self._study_card_frame, text="FRONT", font=("Arial", 10), fg="gray"
         )
         self._study_side_label.pack(pady=(10, 0))
 
         self._study_label = tk.Label(
-            card_frame,
+            self._study_card_frame,
             text="",
             font=("Arial", 16),
             wraplength=400,
             justify=tk.CENTER,
         )
-        self._study_label.pack(expand=True, padx=20, pady=20)
+        self._study_label.pack(expand=True, padx=20, pady=(10, 5))
 
-        card_frame.bind("<Button-1>", lambda e: self._flip_card())
+        # MC choices area (inside card frame)
+        self._study_mc_frame = tk.Frame(self._study_card_frame)
+        self._study_mc_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
+
+        # Feedback label
+        self._study_feedback = tk.Label(
+            self._study_card_frame, text="", font=("Arial", 11)
+        )
+        self._study_feedback.pack(pady=(0, 10))
+
+        # Click to flip (only for free-response cards)
+        self._study_card_frame.bind("<Button-1>", lambda e: self._flip_card())
         self._study_label.bind("<Button-1>", lambda e: self._flip_card())
         self._study_side_label.bind("<Button-1>", lambda e: self._flip_card())
 
@@ -425,7 +573,7 @@ class App:
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
-        # Action row (Flip or Correct/Incorrect)
+        # Action row (Flip or Correct/Incorrect — for free-response only)
         self._action_frame = tk.Frame(self.container)
         self._action_frame.pack(pady=(0, 20))
 
@@ -434,6 +582,12 @@ class App:
     def _rebuild_action_buttons(self):
         for widget in self._action_frame.winfo_children():
             widget.destroy()
+
+        card = self._study_cards[self._study_index]
+
+        # MC cards use the choice buttons for scoring, no action row needed
+        if card[C_TYPE] == "mc":
+            return
 
         if self._study_showing_front:
             tk.Button(
@@ -459,20 +613,53 @@ class App:
                 self._action_frame, text="Scored!", font=("Arial", 11), fg="gray"
             ).pack(side=tk.LEFT, padx=5)
 
+    def _rebuild_mc_choices(self):
+        for widget in self._study_mc_frame.winfo_children():
+            widget.destroy()
+
+        card = self._study_cards[self._study_index]
+        if card[C_TYPE] != "mc":
+            return
+
+        correct_answer = card[C_BACK]
+        wrong_choices = json.loads(card[C_CHOICES]) if card[C_CHOICES] else []
+        all_choices = [correct_answer] + wrong_choices
+        random.shuffle(all_choices)
+
+        self._mc_correct_answer = correct_answer
+        self._mc_choice_btns = []
+
+        for choice in all_choices:
+            btn = tk.Button(
+                self._study_mc_frame,
+                text=choice,
+                font=("Arial", 12),
+                anchor=tk.W,
+                command=lambda c=choice: self._mc_select(c),
+            )
+            btn.pack(fill=tk.X, pady=2)
+            self._mc_choice_btns.append(btn)
+
     def _update_study_display(self):
         card = self._study_cards[self._study_index]
-        if self._study_showing_front:
-            self._study_label.config(text=card[1])
+        is_mc = card[C_TYPE] == "mc"
+
+        # Question text
+        self._study_label.config(text=card[C_FRONT])
+
+        if is_mc:
+            self._study_side_label.config(text="MULTIPLE CHOICE")
+        elif self._study_showing_front:
             self._study_side_label.config(text="FRONT")
         else:
-            self._study_label.config(text=card[2])
+            self._study_label.config(text=card[C_BACK])
             self._study_side_label.config(text="BACK")
 
         self._study_counter.config(
             text=f"Card {self._study_index + 1} of {len(self._study_cards)}"
         )
 
-        correct, incorrect = card[3], card[4]
+        correct, incorrect = card[C_CORRECT], card[C_INCORRECT]
         total = correct + incorrect
         if total > 0:
             pct = round(correct / total * 100)
@@ -482,26 +669,73 @@ class App:
         else:
             self._study_score_label.config(text="Score: no attempts yet")
 
+        self._study_feedback.config(text="")
+
+        # Build MC choices or action buttons
+        for widget in self._study_mc_frame.winfo_children():
+            widget.destroy()
+
+        if is_mc and not self._study_scored:
+            self._rebuild_mc_choices()
+        elif is_mc and self._study_scored:
+            pass  # feedback already shown
+
         self._rebuild_action_buttons()
 
     def _flip_card(self):
+        card = self._study_cards[self._study_index]
+        if card[C_TYPE] == "mc":
+            return  # MC cards don't flip
         if self._study_showing_front:
             self._study_showing_front = False
             self._update_study_display()
 
+    def _mc_select(self, chosen):
+        if self._study_scored:
+            return
+
+        card = self._study_cards[self._study_index]
+        is_correct = chosen == self._mc_correct_answer
+
+        if is_correct:
+            self.db.record_correct(card[C_ID])
+            updated = list(card)
+            updated[C_CORRECT] += 1
+            self._study_feedback.config(text="Correct!", fg="green")
+        else:
+            self.db.record_incorrect(card[C_ID])
+            updated = list(card)
+            updated[C_INCORRECT] += 1
+            self._study_feedback.config(
+                text=f"Incorrect! Answer: {self._mc_correct_answer}", fg="red"
+            )
+
+        self._study_cards[self._study_index] = tuple(updated)
+        self._study_scored = True
+
+        # Color the buttons
+        for btn in self._mc_choice_btns:
+            if btn["text"] == self._mc_correct_answer:
+                btn.config(bg="green", fg="white")
+            elif btn["text"] == chosen and not is_correct:
+                btn.config(bg="red", fg="white")
+            btn.config(state=tk.DISABLED)
+
     def _mark_correct(self):
         card = self._study_cards[self._study_index]
-        self.db.record_correct(card[0])
-        updated = (card[0], card[1], card[2], card[3] + 1, card[4])
-        self._study_cards[self._study_index] = updated
+        self.db.record_correct(card[C_ID])
+        updated = list(card)
+        updated[C_CORRECT] += 1
+        self._study_cards[self._study_index] = tuple(updated)
         self._study_scored = True
         self._update_study_display()
 
     def _mark_incorrect(self):
         card = self._study_cards[self._study_index]
-        self.db.record_incorrect(card[0])
-        updated = (card[0], card[1], card[2], card[3], card[4] + 1)
-        self._study_cards[self._study_index] = updated
+        self.db.record_incorrect(card[C_ID])
+        updated = list(card)
+        updated[C_INCORRECT] += 1
+        self._study_cards[self._study_index] = tuple(updated)
         self._study_scored = True
         self._update_study_display()
 
