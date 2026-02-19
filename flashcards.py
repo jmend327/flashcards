@@ -523,6 +523,19 @@ class App:
         for widget in self.container.winfo_children():
             widget.destroy()
 
+    def _add_back_button(self, command):
+        top_bar = tk.Frame(self.container)
+        top_bar.pack(fill=tk.X, padx=8, pady=(6, 0))
+        tk.Button(
+            top_bar,
+            text="\u2190",
+            font=("Arial", 14),
+            command=command,
+            bd=0,
+            relief=tk.FLAT,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
     # ── Home View ──────────────────────────────────────────────
 
     def show_home(self):
@@ -667,6 +680,7 @@ class App:
             return
 
         self._clear()
+        self._add_back_button(self.show_home)
 
         tk.Label(
             self.container, text="Study by Tag", font=("Arial", 20, "bold")
@@ -710,9 +724,6 @@ class App:
         tk.Button(
             btn_frame, text="Study", command=self._study_selected_tag, width=12
         ).pack(side=tk.LEFT, padx=5)
-        tk.Button(
-            btn_frame, text="Back", command=self.show_home, width=12
-        ).pack(side=tk.LEFT, padx=5)
 
     def _study_selected_tag(self):
         sel = self._tag_listbox.curselection()
@@ -744,6 +755,7 @@ class App:
 
     def show_deck(self, deck_path, deck_name):
         self._clear()
+        self._add_back_button(self.show_home)
 
         tk.Label(
             self.container, text=deck_name, font=("Arial", 20, "bold")
@@ -819,9 +831,6 @@ class App:
             text="Study",
             command=lambda: self._study_deck(deck_path, deck_name),
             width=12,
-        ).pack(side=tk.LEFT, padx=5)
-        tk.Button(
-            btn_frame2, text="Back", command=self.show_home, width=12
         ).pack(side=tk.LEFT, padx=5)
 
     def _edit_card(self, deck_path, deck_name):
@@ -1031,6 +1040,7 @@ class App:
         self._study_showing_front = True
         self._study_scored = False
         self._study_back_callback = back_callback
+        self._add_back_button(back_callback)
 
         tk.Label(
             self.container, text=title, font=("Arial", 16)
@@ -1090,10 +1100,6 @@ class App:
             nav_frame, text="Edit", command=self._edit_study_card, width=12
         ).pack(side=tk.LEFT, padx=5)
 
-        tk.Button(
-            nav_frame, text="Back", command=back_callback, width=12
-        ).pack(side=tk.LEFT, padx=5)
-
         self._action_frame = tk.Frame(self.container)
         self._action_frame.pack(pady=(0, 20))
 
@@ -1115,6 +1121,7 @@ class App:
 
     def _resume_study(self):
         self._clear()
+        self._add_back_button(self._study_back_callback)
 
         tk.Label(
             self.container, text=self._study_title, font=("Arial", 16)
@@ -1172,10 +1179,6 @@ class App:
 
         tk.Button(
             nav_frame, text="Edit", command=self._edit_study_card, width=12
-        ).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(
-            nav_frame, text="Back", command=self._study_back_callback, width=12
         ).pack(side=tk.LEFT, padx=5)
 
         self._action_frame = tk.Frame(self.container)
