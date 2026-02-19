@@ -688,7 +688,7 @@ class App:
 
         tk.Label(
             self.container,
-            text="Select a tag to study all matching cards:",
+            text="Select one or more tags to study (Ctrl/Shift to multi-select):",
             font=("Arial", 11),
         ).pack()
 
@@ -699,7 +699,10 @@ class App:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self._tag_listbox = tk.Listbox(
-            list_frame, font=("Arial", 14), yscrollcommand=scrollbar.set
+            list_frame,
+            font=("Arial", 14),
+            yscrollcommand=scrollbar.set,
+            selectmode=tk.EXTENDED,
         )
         self._tag_listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self._tag_listbox.yview)
@@ -730,26 +733,34 @@ class App:
         if not sel:
             messagebox.showwarning("No Selection", "Please select a tag.")
             return
-        tag_name = self._tag_data[sel[0]][0]
+
+        tag_names = [self._tag_data[i][0] for i in sel]
 
         card_ids_seen = set()
         cards = []
-        for card in self.db.get_cards_by_tag(tag_name):
-            if card[C_ID] not in card_ids_seen:
-                card_ids_seen.add(card[C_ID])
-                cards.append(card)
-        for card in self.db.get_cards_by_deck_tag(tag_name):
-            if card[C_ID] not in card_ids_seen:
-                card_ids_seen.add(card[C_ID])
-                cards.append(card)
+        for tag_name in tag_names:
+            for card in self.db.get_cards_by_tag(tag_name):
+                if card[C_ID] not in card_ids_seen:
+                    card_ids_seen.add(card[C_ID])
+                    cards.append(card)
+            for card in self.db.get_cards_by_deck_tag(tag_name):
+                if card[C_ID] not in card_ids_seen:
+                    card_ids_seen.add(card[C_ID])
+                    cards.append(card)
 
         if not cards:
+            tag_list = ", ".join(f"'{t}'" for t in tag_names)
             messagebox.showinfo(
-                "No Cards", f"No cards found for tag '{tag_name}'."
+                "No Cards", f"No cards found for tag(s) {tag_list}."
             )
             return
 
-        self._start_study(cards, f"Tag: {tag_name}", self.show_tag_picker)
+        if len(tag_names) == 1:
+            title = f"Tag: {tag_names[0]}"
+        else:
+            title = f"Tags: {', '.join(tag_names)}"
+
+        self._start_study(cards, title, self.show_tag_picker)
 
     # ── Deck View ──────────────────────────────────────────────
 
