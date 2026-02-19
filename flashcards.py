@@ -1,266 +1,505 @@
 import tkinter as tk
 from tkinter import messagebox, simpledialog
-import sqlite3
 import json
 import os
+import re
 import random
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards.db")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PUBLIC_DIR = os.path.join(BASE_DIR, "public_flashcards")
+PRIVATE_DIR = os.path.join(BASE_DIR, "private_flashcards")
+LOCAL_DIR = os.path.join(BASE_DIR, ".local")
+SCORES_PATH = os.path.join(LOCAL_DIR, "scores.json")
+LEGACY_DB = os.path.join(BASE_DIR, "flashcards.db")
 
 
-class Database:
-    def __init__(self, path):
-        self.conn = sqlite3.connect(path)
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self._create_tables()
+class ScoreStore:
+    """Stores card scores in .local/scores.json, separate from deck content.
 
-    def _create_tables(self):
-        self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS decks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS cards (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                deck_id INTEGER NOT NULL,
-                front TEXT NOT NULL,
-                back TEXT NOT NULL,
-                card_type TEXT NOT NULL DEFAULT 'free',
-                choices TEXT,
-                correct_count INTEGER NOT NULL DEFAULT 0,
-                incorrect_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE
-            );
-            CREATE TABLE IF NOT EXISTS card_tags (
-                card_id INTEGER NOT NULL,
-                tag_id INTEGER NOT NULL,
-                PRIMARY KEY (card_id, tag_id),
-                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
-                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS deck_tags (
-                deck_id INTEGER NOT NULL,
-                tag_id INTEGER NOT NULL,
-                PRIMARY KEY (deck_id, tag_id),
-                FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
-                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-            );
-        """)
-        self.conn.commit()
-        self._migrate()
+    Keys use forward-slash relative paths so the file is portable if the
+    whole project folder is moved.  Deck files are never touched.
+    """
 
-    def _migrate(self):
-        cur = self.conn.execute("PRAGMA table_info(cards)")
-        columns = {row[1] for row in cur.fetchall()}
-        if "correct_count" not in columns:
-            self.conn.execute(
-                "ALTER TABLE cards ADD COLUMN correct_count INTEGER NOT NULL DEFAULT 0"
-            )
-            self.conn.execute(
-                "ALTER TABLE cards ADD COLUMN incorrect_count INTEGER NOT NULL DEFAULT 0"
-            )
-            self.conn.commit()
-        if "card_type" not in columns:
-            self.conn.execute(
-                "ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'free'"
-            )
-            self.conn.execute("ALTER TABLE cards ADD COLUMN choices TEXT")
-            self.conn.commit()
+    def __init__(self):
+        os.makedirs(LOCAL_DIR, exist_ok=True)
+        # { "rel/path.json": { "card_local_id": [correct, incorrect] } }
+        self._data = {}
+        if os.path.exists(SCORES_PATH):
+            try:
+                with open(SCORES_PATH, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+            except Exception:
+                pass
 
-    # ── Decks ──────────────────────────────────────────────────
+    def _rel(self, abs_path):
+        return os.path.relpath(abs_path, BASE_DIR).replace(os.sep, "/")
 
-    def get_decks(self):
-        cur = self.conn.execute("SELECT id, name FROM decks ORDER BY name")
-        return cur.fetchall()
+    def _flush(self):
+        with open(SCORES_PATH, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, indent=2)
 
-    def create_deck(self, name):
-        self.conn.execute("INSERT INTO decks (name) VALUES (?)", (name,))
-        self.conn.commit()
-        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    def get(self, deck_path, local_id):
+        """Return (correct, incorrect) for a card."""
+        pair = self._data.get(self._rel(deck_path), {}).get(str(local_id), [0, 0])
+        return pair[0], pair[1]
 
-    def rename_deck(self, deck_id, name):
-        self.conn.execute("UPDATE decks SET name = ? WHERE id = ?", (name, deck_id))
-        self.conn.commit()
+    def record_correct(self, deck_path, local_id):
+        rel = self._rel(deck_path)
+        self._data.setdefault(rel, {}).setdefault(str(local_id), [0, 0])
+        self._data[rel][str(local_id)][0] += 1
+        self._flush()
 
-    def delete_deck(self, deck_id):
-        self.conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
-        self.conn.commit()
+    def record_incorrect(self, deck_path, local_id):
+        rel = self._rel(deck_path)
+        self._data.setdefault(rel, {}).setdefault(str(local_id), [0, 0])
+        self._data[rel][str(local_id)][1] += 1
+        self._flush()
 
-    # ── Cards ──────────────────────────────────────────────────
+    def absorb(self, deck_path, local_id, correct, incorrect):
+        """Pull scores already baked into a deck file into the store."""
+        if correct == 0 and incorrect == 0:
+            return
+        rel = self._rel(deck_path)
+        existing = self._data.get(rel, {}).get(str(local_id), [0, 0])
+        self._data.setdefault(rel, {})[str(local_id)] = [
+            existing[0] + correct,
+            existing[1] + incorrect,
+        ]
+        self._flush()
 
-    def get_cards(self, deck_id):
-        cur = self.conn.execute(
-            "SELECT id, front, back, correct_count, incorrect_count,"
-            " card_type, choices"
-            " FROM cards WHERE deck_id = ? ORDER BY created_at",
-            (deck_id,),
-        )
-        return cur.fetchall()
 
-    def record_correct(self, card_id):
-        self.conn.execute(
-            "UPDATE cards SET correct_count = correct_count + 1 WHERE id = ?",
-            (card_id,),
-        )
-        self.conn.commit()
+class DeckStorage:
+    """File-based storage. Each deck is a .json file inside either
+    public_flashcards/ or private_flashcards/."""
 
-    def record_incorrect(self, card_id):
-        self.conn.execute(
-            "UPDATE cards SET incorrect_count = incorrect_count + 1 WHERE id = ?",
-            (card_id,),
-        )
-        self.conn.commit()
+    def __init__(self):
+        os.makedirs(PUBLIC_DIR, exist_ok=True)
+        os.makedirs(PRIVATE_DIR, exist_ok=True)
 
-    def card_count(self, deck_id):
-        cur = self.conn.execute(
-            "SELECT COUNT(*) FROM cards WHERE deck_id = ?", (deck_id,)
-        )
-        return cur.fetchone()[0]
+        self.scores = ScoreStore()
 
-    def create_card(self, deck_id, front, back, card_type="free", choices=None):
-        choices_json = json.dumps(choices) if choices else None
-        self.conn.execute(
-            "INSERT INTO cards (deck_id, front, back, card_type, choices)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (deck_id, front, back, card_type, choices_json),
-        )
-        self.conn.commit()
-        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # session_id (int) → (deck_path, local_card_id)
+        self._registry = {}
+        # (deck_path, local_card_id) → session_id
+        self._reverse = {}
+        self._next_sid = 1
 
-    def update_card(self, card_id, front, back, card_type="free", choices=None):
-        choices_json = json.dumps(choices) if choices else None
-        self.conn.execute(
-            "UPDATE cards SET front = ?, back = ?, card_type = ?, choices = ?"
-            " WHERE id = ?",
-            (front, back, card_type, choices_json, card_id),
-        )
-        self.conn.commit()
+        self._migrate_from_sqlite()
+        self._migrate_scores_from_decks()
+        self._seed_public_decks()
 
-    def get_card_by_id(self, card_id):
-        cur = self.conn.execute(
-            "SELECT id, front, back, correct_count, incorrect_count,"
-            " card_type, choices"
-            " FROM cards WHERE id = ?",
-            (card_id,),
-        )
-        return cur.fetchone()
+    # ── File helpers ─────────────────────────────────────────────
 
-    def delete_card(self, card_id):
-        self.conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
-        self.conn.commit()
+    def _load(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-    # ── Tags ───────────────────────────────────────────────────
+    def _save(self, path, data):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
-    def get_or_create_tag(self, name):
-        name = name.strip().lower()
-        row = self.conn.execute(
-            "SELECT id FROM tags WHERE name = ?", (name,)
-        ).fetchone()
-        if row:
-            return row[0]
-        self.conn.execute("INSERT INTO tags (name) VALUES (?)", (name,))
-        self.conn.commit()
-        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    def _safe_name(self, name):
+        return re.sub(r'[<>:"/\\|?*]', "", name).strip() or "deck"
 
-    def get_all_tags(self):
-        cur = self.conn.execute("SELECT id, name FROM tags ORDER BY name")
-        return cur.fetchall()
+    def _new_path(self, folder, name):
+        base = self._safe_name(name)
+        path = os.path.join(folder, base + ".json")
+        n = 2
+        while os.path.exists(path):
+            path = os.path.join(folder, f"{base}_{n}.json")
+            n += 1
+        return path
 
-    def set_card_tags(self, card_id, tag_names):
-        self.conn.execute("DELETE FROM card_tags WHERE card_id = ?", (card_id,))
-        for name in tag_names:
-            name = name.strip()
-            if not name:
+    # ── Session-ID registry ──────────────────────────────────────
+
+    def _get_sid(self, deck_path, local_id):
+        key = (deck_path, local_id)
+        if key not in self._reverse:
+            sid = self._next_sid
+            self._next_sid += 1
+            self._registry[sid] = key
+            self._reverse[key] = sid
+        return self._reverse[key]
+
+    def _resolve(self, session_id):
+        return self._registry[session_id]  # (deck_path, local_id)
+
+    # ── Migration from old SQLite DB ─────────────────────────────
+
+    def _migrate_from_sqlite(self):
+        if not os.path.exists(LEGACY_DB):
+            return
+        try:
+            import sqlite3
+            conn = sqlite3.connect(LEGACY_DB)
+            decks = conn.execute("SELECT id, name FROM decks").fetchall()
+            for deck_id, deck_name in decks:
+                PUBLIC_NAMES = {"Light Trivia", "Fun Trivia Mix"}
+                folder = PUBLIC_DIR if deck_name in PUBLIC_NAMES else PRIVATE_DIR
+                safe = self._safe_name(deck_name)
+                target = os.path.join(folder, safe + ".json")
+                if os.path.exists(target):
+                    continue
+
+                rows = conn.execute(
+                    "SELECT id, front, back, correct_count, incorrect_count,"
+                    " card_type, choices FROM cards WHERE deck_id = ?"
+                    " ORDER BY created_at",
+                    (deck_id,),
+                ).fetchall()
+
+                deck_tags = [
+                    r[0] for r in conn.execute(
+                        "SELECT t.name FROM tags t"
+                        " JOIN deck_tags dt ON t.id = dt.tag_id"
+                        " WHERE dt.deck_id = ?",
+                        (deck_id,),
+                    ).fetchall()
+                ]
+
+                cards = []
+                for i, row in enumerate(rows, 1):
+                    old_id, front, back, correct, incorrect, ctype, choices_json = row
+                    ctags = [
+                        r[0] for r in conn.execute(
+                            "SELECT t.name FROM tags t"
+                            " JOIN card_tags ct ON t.id = ct.tag_id"
+                            " WHERE ct.card_id = ?",
+                            (old_id,),
+                        ).fetchall()
+                    ]
+                    cards.append({
+                        "id": i,
+                        "front": front,
+                        "back": back,
+                        "card_type": ctype,
+                        "choices": json.loads(choices_json) if choices_json else None,
+                        "tags": ctags,
+                    })
+                    self.scores.absorb(target, i, correct, incorrect)
+
+                self._save(target, {
+                    "name": deck_name,
+                    "tags": deck_tags,
+                    "next_id": len(cards) + 1,
+                    "cards": cards,
+                })
+
+            conn.close()
+            os.rename(LEGACY_DB, LEGACY_DB + ".migrated")
+        except Exception as e:
+            print(f"Migration warning: {e}")
+
+    # ── Score migration from deck files ──────────────────────────
+
+    def _migrate_scores_from_decks(self):
+        """If any deck JSON files still have correct_count/incorrect_count baked
+        in (from before scores were separated), absorb them into ScoreStore and
+        remove the fields from the file so deck files stay score-free."""
+        for folder in (PUBLIC_DIR, PRIVATE_DIR):
+            for deck_path, _ in self.get_decks_in_folder(folder):
+                try:
+                    data = self._load(deck_path)
+                except Exception:
+                    continue
+                dirty = False
+                for card in data.get("cards", []):
+                    correct = card.pop("correct_count", None)
+                    incorrect = card.pop("incorrect_count", None)
+                    if correct is not None or incorrect is not None:
+                        dirty = True
+                        self.scores.absorb(deck_path, card["id"],
+                                           correct or 0, incorrect or 0)
+                if dirty:
+                    self._save(deck_path, data)
+
+    # ── Public example deck seeding ──────────────────────────────
+
+    def _seed_public_decks(self):
+        target = os.path.join(PUBLIC_DIR, "Fun Trivia Mix.json")
+        if os.path.exists(target):
+            return
+        cards = [
+            {
+                "id": 1,
+                "front": "Which planet is closest to the Sun?",
+                "back": "Mercury",
+                "card_type": "mc",
+                "choices": ["Venus", "Earth", "Mars"],
+                "tags": [],
+            },
+            {
+                "id": 2,
+                "front": "What is the largest ocean on Earth?",
+                "back": "Pacific Ocean",
+                "card_type": "mc",
+                "choices": ["Atlantic Ocean", "Indian Ocean", "Arctic Ocean"],
+                "tags": [],
+            },
+            {
+                "id": 3,
+                "front": "How many sides does a pentagon have?",
+                "back": "5",
+                "card_type": "mc",
+                "choices": ["4", "6", "8"],
+                "tags": [],
+            },
+            {
+                "id": 4,
+                "front": "What is the most spoken language in the world by native speakers?",
+                "back": "Mandarin Chinese",
+                "card_type": "mc",
+                "choices": ["English", "Spanish", "Hindi"],
+                "tags": [],
+            },
+            {
+                "id": 5,
+                "front": "What is 15% of 200?",
+                "back": "30",
+                "card_type": "mc",
+                "choices": ["25", "35", "45"],
+                "tags": [],
+            },
+            {
+                "id": 6,
+                "front": "What year did World War II end?",
+                "back": "1945",
+                "card_type": "free",
+                "choices": None,
+                "tags": [],
+            },
+            {
+                "id": 7,
+                "front": "What gas do plants absorb during photosynthesis?",
+                "back": "Carbon dioxide (CO2)",
+                "card_type": "free",
+                "choices": None,
+                "tags": [],
+            },
+            {
+                "id": 8,
+                "front": "What is the square root of 64?",
+                "back": "8",
+                "card_type": "free",
+                "choices": None,
+                "tags": [],
+            },
+        ]
+        self._save(target, {
+            "name": "Fun Trivia Mix",
+            "tags": [],
+            "next_id": 9,
+            "cards": cards,
+        })
+
+    # ── Folder queries ───────────────────────────────────────────
+
+    def get_decks_in_folder(self, folder):
+        """Return list of (deck_path, name) sorted by name."""
+        if not os.path.isdir(folder):
+            return []
+        result = []
+        for fname in os.listdir(folder):
+            if not fname.endswith(".json"):
                 continue
-            tag_id = self.get_or_create_tag(name)
-            self.conn.execute(
-                "INSERT OR IGNORE INTO card_tags (card_id, tag_id) VALUES (?, ?)",
-                (card_id, tag_id),
-            )
-        self.conn.commit()
-        self._cleanup_orphan_tags()
+            path = os.path.join(folder, fname)
+            try:
+                data = self._load(path)
+                result.append((path, data.get("name", fname[:-5])))
+            except Exception:
+                pass
+        result.sort(key=lambda x: x[1].lower())
+        return result
 
-    def get_card_tags(self, card_id):
-        cur = self.conn.execute(
-            "SELECT t.name FROM tags t"
-            " JOIN card_tags ct ON t.id = ct.tag_id"
-            " WHERE ct.card_id = ? ORDER BY t.name",
-            (card_id,),
+    # ── Deck CRUD ────────────────────────────────────────────────
+
+    def create_deck(self, name, folder):
+        path = self._new_path(folder, name)
+        self._save(path, {"name": name, "tags": [], "next_id": 1, "cards": []})
+        return path
+
+    def rename_deck(self, deck_path, new_name):
+        data = self._load(deck_path)
+        data["name"] = new_name
+        self._save(deck_path, data)
+
+    def delete_deck(self, deck_path):
+        if os.path.exists(deck_path):
+            os.remove(deck_path)
+        gone = [sid for sid, (p, _) in self._registry.items() if p == deck_path]
+        for sid in gone:
+            _, lid = self._registry.pop(sid)
+            self._reverse.pop((deck_path, lid), None)
+
+    def card_count(self, deck_path):
+        try:
+            return len(self._load(deck_path).get("cards", []))
+        except Exception:
+            return 0
+
+    def get_deck_tags(self, deck_path):
+        try:
+            return self._load(deck_path).get("tags", [])
+        except Exception:
+            return []
+
+    def set_deck_tags(self, deck_path, tags):
+        data = self._load(deck_path)
+        data["tags"] = [t.strip().lower() for t in tags if t.strip()]
+        self._save(deck_path, data)
+
+    # ── Card helpers ─────────────────────────────────────────────
+
+    def _to_tuple(self, deck_path, card):
+        sid = self._get_sid(deck_path, card["id"])
+        correct, incorrect = self.scores.get(deck_path, card["id"])
+        choices_json = json.dumps(card["choices"]) if card.get("choices") else None
+        return (
+            sid,
+            card["front"],
+            card["back"],
+            correct,
+            incorrect,
+            card.get("card_type", "free"),
+            choices_json,
         )
-        return [row[0] for row in cur.fetchall()]
 
-    def set_deck_tags(self, deck_id, tag_names):
-        self.conn.execute("DELETE FROM deck_tags WHERE deck_id = ?", (deck_id,))
-        for name in tag_names:
-            name = name.strip()
-            if not name:
-                continue
-            tag_id = self.get_or_create_tag(name)
-            self.conn.execute(
-                "INSERT OR IGNORE INTO deck_tags (deck_id, tag_id) VALUES (?, ?)",
-                (deck_id, tag_id),
-            )
-        self.conn.commit()
-        self._cleanup_orphan_tags()
+    def _find(self, data, local_id):
+        for i, c in enumerate(data.get("cards", [])):
+            if c["id"] == local_id:
+                return i, c
+        return None, None
 
-    def get_deck_tags(self, deck_id):
-        cur = self.conn.execute(
-            "SELECT t.name FROM tags t"
-            " JOIN deck_tags dt ON t.id = dt.tag_id"
-            " WHERE dt.deck_id = ? ORDER BY t.name",
-            (deck_id,),
-        )
-        return [row[0] for row in cur.fetchall()]
+    # ── Card CRUD ────────────────────────────────────────────────
 
-    def get_cards_by_tag(self, tag_name):
-        cur = self.conn.execute(
-            "SELECT c.id, c.front, c.back, c.correct_count, c.incorrect_count,"
-            " c.card_type, c.choices"
-            " FROM cards c"
-            " JOIN card_tags ct ON c.id = ct.card_id"
-            " JOIN tags t ON t.id = ct.tag_id"
-            " WHERE t.name = ?",
-            (tag_name,),
-        )
-        return cur.fetchall()
+    def get_cards(self, deck_path):
+        data = self._load(deck_path)
+        return [self._to_tuple(deck_path, c) for c in data.get("cards", [])]
 
-    def get_cards_by_deck_tag(self, tag_name):
-        """Get all cards in decks that have a given tag."""
-        cur = self.conn.execute(
-            "SELECT c.id, c.front, c.back, c.correct_count, c.incorrect_count,"
-            " c.card_type, c.choices"
-            " FROM cards c"
-            " JOIN deck_tags dt ON c.deck_id = dt.deck_id"
-            " JOIN tags t ON t.id = dt.tag_id"
-            " WHERE t.name = ?",
-            (tag_name,),
-        )
-        return cur.fetchall()
+    def create_card(self, deck_path, front, back, card_type="free", choices=None):
+        data = self._load(deck_path)
+        local_id = data.get("next_id", 1)
+        data["cards"].append({
+            "id": local_id,
+            "front": front,
+            "back": back,
+            "card_type": card_type,
+            "choices": choices,
+            "tags": [],
+        })
+        data["next_id"] = local_id + 1
+        self._save(deck_path, data)
+        return self._get_sid(deck_path, local_id)
+
+    def update_card(self, session_id, front, back, card_type="free", choices=None):
+        deck_path, local_id = self._resolve(session_id)
+        data = self._load(deck_path)
+        idx, card = self._find(data, local_id)
+        if card is not None:
+            card.update({"front": front, "back": back,
+                         "card_type": card_type, "choices": choices})
+            data["cards"][idx] = card
+            self._save(deck_path, data)
+
+    def get_card_by_id(self, session_id):
+        try:
+            deck_path, local_id = self._resolve(session_id)
+            data = self._load(deck_path)
+            _, card = self._find(data, local_id)
+            if card:
+                return self._to_tuple(deck_path, card)
+        except Exception:
+            pass
+        return None
+
+    def delete_card(self, session_id):
+        deck_path, local_id = self._resolve(session_id)
+        data = self._load(deck_path)
+        data["cards"] = [c for c in data["cards"] if c["id"] != local_id]
+        self._save(deck_path, data)
+        self._reverse.pop((deck_path, local_id), None)
+        self._registry.pop(session_id, None)
+
+    def record_correct(self, session_id):
+        deck_path, local_id = self._resolve(session_id)
+        self.scores.record_correct(deck_path, local_id)
+
+    def record_incorrect(self, session_id):
+        deck_path, local_id = self._resolve(session_id)
+        self.scores.record_incorrect(deck_path, local_id)
+
+    # ── Card tags ────────────────────────────────────────────────
+
+    def get_card_tags(self, session_id):
+        try:
+            deck_path, local_id = self._resolve(session_id)
+            data = self._load(deck_path)
+            _, card = self._find(data, local_id)
+            return card.get("tags", []) if card else []
+        except Exception:
+            return []
+
+    def set_card_tags(self, session_id, tags):
+        deck_path, local_id = self._resolve(session_id)
+        data = self._load(deck_path)
+        idx, card = self._find(data, local_id)
+        if card is not None:
+            card["tags"] = [t.strip().lower() for t in tags if t.strip()]
+            data["cards"][idx] = card
+            self._save(deck_path, data)
+
+    # ── Tag queries across all decks ─────────────────────────────
+
+    def _all_deck_paths(self):
+        paths = []
+        for folder in (PUBLIC_DIR, PRIVATE_DIR):
+            for path, _ in self.get_decks_in_folder(folder):
+                paths.append(path)
+        return paths
 
     def get_all_tags_with_counts(self):
-        cur = self.conn.execute(
-            "SELECT t.name,"
-            " (SELECT COUNT(*) FROM card_tags ct WHERE ct.tag_id = t.id),"
-            " (SELECT COUNT(*) FROM deck_tags dt WHERE dt.tag_id = t.id)"
-            " FROM tags t ORDER BY t.name"
+        card_counts, deck_counts = {}, {}
+        for deck_path in self._all_deck_paths():
+            try:
+                data = self._load(deck_path)
+            except Exception:
+                continue
+            for t in data.get("tags", []):
+                deck_counts[t] = deck_counts.get(t, 0) + 1
+            for card in data.get("cards", []):
+                for t in card.get("tags", []):
+                    card_counts[t] = card_counts.get(t, 0) + 1
+        all_tags = set(card_counts) | set(deck_counts)
+        return sorted(
+            [(t, card_counts.get(t, 0), deck_counts.get(t, 0)) for t in all_tags]
         )
-        return cur.fetchall()
 
-    def _cleanup_orphan_tags(self):
-        self.conn.execute(
-            "DELETE FROM tags WHERE id NOT IN"
-            " (SELECT tag_id FROM card_tags UNION SELECT tag_id FROM deck_tags)"
-        )
-        self.conn.commit()
+    def get_cards_by_tag(self, tag_name):
+        result = []
+        for deck_path in self._all_deck_paths():
+            try:
+                data = self._load(deck_path)
+            except Exception:
+                continue
+            for card in data.get("cards", []):
+                if tag_name in card.get("tags", []):
+                    result.append(self._to_tuple(deck_path, card))
+        return result
+
+    def get_cards_by_deck_tag(self, tag_name):
+        result = []
+        for deck_path in self._all_deck_paths():
+            try:
+                data = self._load(deck_path)
+            except Exception:
+                continue
+            if tag_name in data.get("tags", []):
+                for card in data.get("cards", []):
+                    result.append(self._to_tuple(deck_path, card))
+        return result
 
     def close(self):
-        self.conn.close()
+        pass  # nothing to close for file-based storage
 
 
 # Card tuple indices
@@ -273,7 +512,7 @@ class App:
         self.root.title("Flashcards")
         self.root.geometry("600x550")
         self.root.minsize(400, 400)
-        self.db = Database(DB_PATH)
+        self.db = DeckStorage()
 
         self.container = tk.Frame(root)
         self.container.pack(fill=tk.BOTH, expand=True)
@@ -305,12 +544,28 @@ class App:
         self.deck_listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.deck_listbox.yview)
 
-        self.decks = self.db.get_decks()
-        for deck_id, name in self.decks:
-            count = self.db.card_count(deck_id)
-            dtags = self.db.get_deck_tags(deck_id)
-            tag_str = f"  [{', '.join(dtags)}]" if dtags else ""
-            self.deck_listbox.insert(tk.END, f"{name}  ({count} cards){tag_str}")
+        # Each entry is None (section header) or (deck_path, name)
+        self.deck_list_entries = []
+
+        def add_section(label, folder):
+            self.deck_listbox.insert(tk.END, f"  \u2500\u2500 {label} ")
+            self.deck_list_entries.append(None)
+            idx = len(self.deck_list_entries) - 1
+            self.deck_listbox.itemconfigure(
+                idx, fg="gray",
+                selectbackground="#e8e8e8", selectforeground="gray"
+            )
+            for deck_path, name in self.db.get_decks_in_folder(folder):
+                count = self.db.card_count(deck_path)
+                dtags = self.db.get_deck_tags(deck_path)
+                tag_str = f"  [{', '.join(dtags)}]" if dtags else ""
+                self.deck_listbox.insert(
+                    tk.END, f"    {name}  ({count} cards){tag_str}"
+                )
+                self.deck_list_entries.append((deck_path, name))
+
+        add_section("Example Sets", PUBLIC_DIR)
+        add_section("My Sets", PRIVATE_DIR)
 
         self.deck_listbox.bind("<Double-Button-1>", lambda e: self._open_deck())
 
@@ -345,54 +600,62 @@ class App:
         if not sel:
             messagebox.showwarning("No Selection", "Please select a deck.")
             return None
-        return self.decks[sel[0]]
+        entry = self.deck_list_entries[sel[0]]
+        if entry is None:
+            messagebox.showwarning("No Selection", "Please select a deck.")
+            return None
+        return entry  # (deck_path, name)
 
     def _new_deck(self):
         name = simpledialog.askstring("New Deck", "Deck name:")
         if name and name.strip():
-            self.db.create_deck(name.strip())
+            self.db.create_deck(name.strip(), PRIVATE_DIR)
             self.show_home()
 
     def _rename_deck(self):
         deck = self._selected_deck()
         if not deck:
             return
+        deck_path, deck_name = deck
         name = simpledialog.askstring(
-            "Rename Deck", "New name:", initialvalue=deck[1]
+            "Rename Deck", "New name:", initialvalue=deck_name
         )
         if name and name.strip():
-            self.db.rename_deck(deck[0], name.strip())
+            self.db.rename_deck(deck_path, name.strip())
             self.show_home()
 
     def _delete_deck(self):
         deck = self._selected_deck()
         if not deck:
             return
+        deck_path, deck_name = deck
         if messagebox.askyesno(
-            "Delete Deck", f"Delete '{deck[1]}' and all its cards?"
+            "Delete Deck", f"Delete '{deck_name}' and all its cards?"
         ):
-            self.db.delete_deck(deck[0])
+            self.db.delete_deck(deck_path)
             self.show_home()
 
     def _open_deck(self):
         deck = self._selected_deck()
         if not deck:
             return
-        self.show_deck(deck[0], deck[1])
+        deck_path, deck_name = deck
+        self.show_deck(deck_path, deck_name)
 
     def _edit_deck_tags(self):
         deck = self._selected_deck()
         if not deck:
             return
-        current = self.db.get_deck_tags(deck[0])
+        deck_path, deck_name = deck
+        current = self.db.get_deck_tags(deck_path)
         result = simpledialog.askstring(
             "Deck Tags",
-            f"Tags for '{deck[1]}' (comma-separated):",
+            f"Tags for '{deck_name}' (comma-separated):",
             initialvalue=", ".join(current),
         )
         if result is not None:
             tags = [t.strip() for t in result.split(",") if t.strip()]
-            self.db.set_deck_tags(deck[0], tags)
+            self.db.set_deck_tags(deck_path, tags)
             self.show_home()
 
     # ── Tag Picker View ────────────────────────────────────────
@@ -458,7 +721,6 @@ class App:
             return
         tag_name = self._tag_data[sel[0]][0]
 
-        # Collect cards tagged directly + cards in tagged decks
         card_ids_seen = set()
         cards = []
         for card in self.db.get_cards_by_tag(tag_name):
@@ -480,15 +742,14 @@ class App:
 
     # ── Deck View ──────────────────────────────────────────────
 
-    def show_deck(self, deck_id, deck_name):
+    def show_deck(self, deck_path, deck_name):
         self._clear()
 
-        # Header with deck tags
         tk.Label(
             self.container, text=deck_name, font=("Arial", 20, "bold")
         ).pack(pady=(20, 5))
 
-        dtags = self.db.get_deck_tags(deck_id)
+        dtags = self.db.get_deck_tags(deck_path)
         if dtags:
             tk.Label(
                 self.container,
@@ -509,7 +770,7 @@ class App:
         self.card_listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.card_listbox.yview)
 
-        self.cards = self.db.get_cards(deck_id)
+        self.cards = self.db.get_cards(deck_path)
         for card in self.cards:
             front = card[C_FRONT]
             correct, incorrect = card[C_CORRECT], card[C_INCORRECT]
@@ -534,19 +795,19 @@ class App:
         tk.Button(
             btn_frame,
             text="Add Card",
-            command=lambda: self.show_card_form(deck_id, deck_name),
+            command=lambda: self.show_card_form(deck_path, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
         tk.Button(
             btn_frame,
             text="Edit",
-            command=lambda: self._edit_card(deck_id, deck_name),
+            command=lambda: self._edit_card(deck_path, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
         tk.Button(
             btn_frame,
             text="Delete",
-            command=lambda: self._delete_card(deck_id, deck_name),
+            command=lambda: self._delete_card(deck_path, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
@@ -556,22 +817,22 @@ class App:
         tk.Button(
             btn_frame2,
             text="Study",
-            command=lambda: self._study_deck(deck_id, deck_name),
+            command=lambda: self._study_deck(deck_path, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
         tk.Button(
             btn_frame2, text="Back", command=self.show_home, width=12
         ).pack(side=tk.LEFT, padx=5)
 
-    def _edit_card(self, deck_id, deck_name):
+    def _edit_card(self, deck_path, deck_name):
         sel = self.card_listbox.curselection()
         if not sel:
             messagebox.showwarning("No Selection", "Please select a card.")
             return
         card = self.cards[sel[0]]
-        self.show_card_form(deck_id, deck_name, card=card)
+        self.show_card_form(deck_path, deck_name, card=card)
 
-    def _delete_card(self, deck_id, deck_name):
+    def _delete_card(self, deck_path, deck_name):
         sel = self.card_listbox.curselection()
         if not sel:
             messagebox.showwarning("No Selection", "Please select a card.")
@@ -581,32 +842,31 @@ class App:
             "Delete Card", f"Delete this card?\n\n{card[C_FRONT]}"
         ):
             self.db.delete_card(card[C_ID])
-            self.show_deck(deck_id, deck_name)
+            self.show_deck(deck_path, deck_name)
 
-    def _study_deck(self, deck_id, deck_name):
-        cards = self.db.get_cards(deck_id)
+    def _study_deck(self, deck_path, deck_name):
+        cards = self.db.get_cards(deck_path)
         if not cards:
             messagebox.showinfo("No Cards", "This deck has no cards to study.")
             return
         self._start_study(
             cards,
             f"Studying: {deck_name}",
-            lambda: self.show_deck(deck_id, deck_name),
+            lambda: self.show_deck(deck_path, deck_name),
         )
 
     # ── Card Form View ─────────────────────────────────────────
 
-    def show_card_form(self, deck_id, deck_name, card=None, on_done=None):
+    def show_card_form(self, deck_path, deck_name, card=None, on_done=None):
         self._clear()
         editing = card is not None
         title = "Edit Card" if editing else "Add Card"
-        _navigate_back = on_done or (lambda: self.show_deck(deck_id, deck_name))
+        _navigate_back = on_done or (lambda: self.show_deck(deck_path, deck_name))
 
         tk.Label(
             self.container, text=title, font=("Arial", 20, "bold")
         ).pack(pady=(20, 10))
 
-        # Scrollable form area
         canvas = tk.Canvas(self.container)
         form_scrollbar = tk.Scrollbar(
             self.container, orient=tk.VERTICAL, command=canvas.yview
@@ -630,7 +890,6 @@ class App:
 
         form = form_outer
 
-        # Card type selector
         tk.Label(form, text="Card Type:", font=("Arial", 12)).pack(anchor=tk.W)
         type_var = tk.StringVar(value="free")
         type_frame = tk.Frame(form)
@@ -645,18 +904,15 @@ class App:
             font=("Arial", 11), command=lambda: _toggle_type(),
         ).pack(side=tk.LEFT)
 
-        # Front
         tk.Label(form, text="Front (Question):", font=("Arial", 12)).pack(anchor=tk.W)
         front_text = tk.Text(form, height=3, font=("Arial", 12), wrap=tk.WORD)
         front_text.pack(fill=tk.X, pady=(0, 10))
 
-        # Back / correct answer
         self._back_label = tk.Label(form, text="Back (Answer):", font=("Arial", 12))
         self._back_label.pack(anchor=tk.W)
         back_text = tk.Text(form, height=3, font=("Arial", 12), wrap=tk.WORD)
         back_text.pack(fill=tk.X, pady=(0, 10))
 
-        # MC wrong choices area
         self._mc_frame = tk.Frame(form)
         self._mc_entries = []
 
@@ -676,7 +932,6 @@ class App:
             mc_btn_frame, text="- Remove Last", command=lambda: _remove_choice_entry()
         ).pack(side=tk.LEFT)
 
-        # Tags
         tk.Label(form, text="Tags (comma-separated):", font=("Arial", 12)).pack(
             anchor=tk.W
         )
@@ -706,14 +961,12 @@ class App:
                 self._back_label.config(text="Back (Answer):")
                 self._mc_frame.pack_forget()
 
-        # Pre-fill if editing
         if editing:
             front_text.insert("1.0", card[C_FRONT])
             back_text.insert("1.0", card[C_BACK])
             type_var.set(card[C_TYPE])
             if card[C_TYPE] == "mc" and card[C_CHOICES]:
-                wrong_choices = json.loads(card[C_CHOICES])
-                for wc in wrong_choices:
+                for wc in json.loads(card[C_CHOICES]):
                     _add_choice_entry(wc)
             _toggle_type()
             ctags = self.db.get_card_tags(card[C_ID])
@@ -741,17 +994,13 @@ class App:
                     return
                 choices = wrong
 
-            tag_names = [
-                t.strip() for t in tags_entry.get().split(",") if t.strip()
-            ]
+            tag_names = [t.strip() for t in tags_entry.get().split(",") if t.strip()]
 
             if editing:
                 self.db.update_card(card[C_ID], front, back, card_type, choices)
                 self.db.set_card_tags(card[C_ID], tag_names)
             else:
-                card_id = self.db.create_card(
-                    deck_id, front, back, card_type, choices
-                )
+                card_id = self.db.create_card(deck_path, front, back, card_type, choices)
                 self.db.set_card_tags(card_id, tag_names)
 
             canvas.unbind_all("<MouseWheel>")
@@ -766,10 +1015,7 @@ class App:
         tk.Button(
             btn_frame,
             text="Cancel",
-            command=lambda: (
-                canvas.unbind_all("<MouseWheel>"),
-                _navigate_back(),
-            ),
+            command=lambda: (canvas.unbind_all("<MouseWheel>"), _navigate_back()),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
@@ -790,9 +1036,7 @@ class App:
             self.container, text=title, font=("Arial", 16)
         ).pack(pady=(20, 5))
 
-        self._study_counter = tk.Label(
-            self.container, text="", font=("Arial", 11)
-        )
+        self._study_counter = tk.Label(self.container, text="", font=("Arial", 11))
         self._study_counter.pack()
 
         self._study_score_label = tk.Label(
@@ -800,7 +1044,6 @@ class App:
         )
         self._study_score_label.pack()
 
-        # Card display area
         self._study_card_frame = tk.Frame(self.container, bd=2, relief=tk.GROOVE)
         self._study_card_frame.pack(fill=tk.BOTH, expand=True, padx=40, pady=15)
 
@@ -818,22 +1061,18 @@ class App:
         )
         self._study_label.pack(expand=True, padx=20, pady=(10, 5))
 
-        # MC choices area (inside card frame)
         self._study_mc_frame = tk.Frame(self._study_card_frame)
         self._study_mc_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
 
-        # Feedback label
         self._study_feedback = tk.Label(
             self._study_card_frame, text="", font=("Arial", 11)
         )
         self._study_feedback.pack(pady=(0, 10))
 
-        # Click to flip (free-response only)
         self._study_card_frame.bind("<Button-1>", lambda e: self._flip_card())
         self._study_label.bind("<Button-1>", lambda e: self._flip_card())
         self._study_side_label.bind("<Button-1>", lambda e: self._flip_card())
 
-        # Navigation row
         nav_frame = tk.Frame(self.container)
         nav_frame.pack(pady=(0, 5))
 
@@ -852,13 +1091,9 @@ class App:
         ).pack(side=tk.LEFT, padx=5)
 
         tk.Button(
-            nav_frame,
-            text="Back",
-            command=back_callback,
-            width=12,
+            nav_frame, text="Back", command=back_callback, width=12
         ).pack(side=tk.LEFT, padx=5)
 
-        # Action row (Flip or Correct/Incorrect)
         self._action_frame = tk.Frame(self.container)
         self._action_frame.pack(pady=(0, 20))
 
@@ -869,7 +1104,6 @@ class App:
         card_id = card[C_ID]
 
         def _after_edit():
-            # Re-fetch the edited card from DB and update the study list
             refreshed = self.db.get_card_by_id(card_id)
             if refreshed:
                 self._study_cards[self._study_index] = refreshed
@@ -877,20 +1111,16 @@ class App:
             self._study_scored = False
             self._resume_study()
 
-        # deck_id/deck_name aren't used for editing, pass None
         self.show_card_form(None, None, card=card, on_done=_after_edit)
 
     def _resume_study(self):
-        """Rebuild the study UI at the current index without reshuffling."""
         self._clear()
 
         tk.Label(
             self.container, text=self._study_title, font=("Arial", 16)
         ).pack(pady=(20, 5))
 
-        self._study_counter = tk.Label(
-            self.container, text="", font=("Arial", 11)
-        )
+        self._study_counter = tk.Label(self.container, text="", font=("Arial", 11))
         self._study_counter.pack()
 
         self._study_score_label = tk.Label(
@@ -945,20 +1175,13 @@ class App:
         ).pack(side=tk.LEFT, padx=5)
 
         tk.Button(
-            nav_frame,
-            text="Back",
-            command=self._study_back_callback,
-            width=12,
+            nav_frame, text="Back", command=self._study_back_callback, width=12
         ).pack(side=tk.LEFT, padx=5)
 
         self._action_frame = tk.Frame(self.container)
         self._action_frame.pack(pady=(0, 20))
 
         self._update_study_display()
-
-    # kept for backward compat with deck-based study
-    def show_study(self, deck_id, deck_name):
-        self._study_deck(deck_id, deck_name)
 
     def _rebuild_action_buttons(self):
         for widget in self._action_frame.winfo_children():
@@ -1042,9 +1265,7 @@ class App:
         total = correct + incorrect
         if total > 0:
             pct = round(correct / total * 100)
-            self._study_score_label.config(
-                text=f"Score: {correct}/{total} ({pct}%)"
-            )
+            self._study_score_label.config(text=f"Score: {correct}/{total} ({pct}%)")
         else:
             self._study_score_label.config(text="Score: no attempts yet")
 

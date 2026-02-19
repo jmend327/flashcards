@@ -1,0 +1,91 @@
+{
+  "name": "Fun Trivia Mix",
+  "tags": [],
+  "next_id": 9,
+  "cards": [
+    {
+      "id": 1,
+      "front": "Which planet is closest to the Sun?",
+      "back": "Mercury",
+      "card_type": "mc",
+      "choices": [
+        "Venus",
+        "Earth",
+        "Mars"
+      ],
+      "tags": []
+    },
+    {
+      "id": 2,
+      "front": "What is the largest ocean on Earth?",
+      "back": "Pacific Ocean",
+      "card_type": "mc",
+      "choices": [
+        "Atlantic Ocean",
+        "Indian Ocean",
+        "Arctic Ocean"
+      ],
+      "tags": []
+    },
+    {
+      "id": 3,
+      "front": "How many sides does a pentagon have?",
+      "back": "5",
+      "card_type": "mc",
+      "choices": [
+        "4",
+        "6",
+        "8"
+      ],
+      "tags": []
+    },
+    {
+      "id": 4,
+      "front": "What is the most spoken language in the world by native speakers?",
+      "back": "Mandarin Chinese",
+      "card_type": "mc",
+      "choices": [
+        "English",
+        "Spanish",
+        "Hindi"
+      ],
+      "tags": []
+    },
+    {
+      "id": 5,
+      "front": "What is 15% of 200?",
+      "back": "30",
+      "card_type": "mc",
+      "choices": [
+        "25",
+        "35",
+        "45"
+      ],
+      "tags": []
+    },
+    {
+      "id": 6,
+      "front": "What year did World War II end?",
+      "back": "1945",
+      "card_type": "free",
+      "choices": null,
+      "tags": []
+    },
+    {
+      "id": 7,
+      "front": "What gas do plants absorb during photosynthesis?",
+      "back": "Carbon dioxide (CO2)",
+      "card_type": "free",
+      "choices": null,
+      "tags": []
+    },
+    {
+      "id": 8,
+      "front": "What is the square root of 64?",
+      "back": "8",
+      "card_type": "free",
+      "choices": null,
+      "tags": []
+    }
+  ]
+}
