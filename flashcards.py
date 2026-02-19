@@ -535,6 +535,40 @@ class App:
             relief=tk.FLAT,
             cursor="hand2",
         ).pack(side=tk.LEFT)
+        return top_bar
+
+    def _add_order_menu(self, parent):
+        tk.Label(parent, text="Order:", font=("Arial", 10)).pack(
+            side=tk.RIGHT, padx=(0, 4)
+        )
+        self._study_order_var = tk.StringVar(value=self._study_order)
+        tk.OptionMenu(
+            parent,
+            self._study_order_var,
+            "Random",
+            "Original",
+            "Lowest-scored",
+            command=self._apply_study_order,
+        ).pack(side=tk.RIGHT, padx=(0, 2))
+
+    def _apply_study_order(self, mode):
+        self._study_order = mode
+        if mode == "Original":
+            id_rank = {cid: i for i, cid in enumerate(self._study_original_ids)}
+            self._study_cards = sorted(
+                self._study_cards, key=lambda c: id_rank[c[C_ID]]
+            )
+        elif mode == "Random":
+            random.shuffle(self._study_cards)
+        else:  # Lowest-scored
+            def score_key(c):
+                total = c[C_CORRECT] + c[C_INCORRECT]
+                return c[C_CORRECT] / total if total > 0 else -1.0
+            self._study_cards = sorted(self._study_cards, key=score_key)
+        self._study_index = 0
+        self._study_showing_front = True
+        self._study_scored = False
+        self._update_study_display()
 
     # ── Home View ──────────────────────────────────────────────
 
@@ -1043,6 +1077,8 @@ class App:
 
     def _start_study(self, cards, title, back_callback):
         self._clear()
+        self._study_original_ids = [c[C_ID] for c in cards]
+        self._study_order = "Random"
         random.shuffle(cards)
 
         self._study_cards = cards
@@ -1051,7 +1087,8 @@ class App:
         self._study_showing_front = True
         self._study_scored = False
         self._study_back_callback = back_callback
-        self._add_back_button(back_callback)
+        top_bar = self._add_back_button(back_callback)
+        self._add_order_menu(top_bar)
 
         tk.Label(
             self.container, text=title, font=("Arial", 16)
@@ -1132,7 +1169,8 @@ class App:
 
     def _resume_study(self):
         self._clear()
-        self._add_back_button(self._study_back_callback)
+        top_bar = self._add_back_button(self._study_back_callback)
+        self._add_order_menu(top_bar)
 
         tk.Label(
             self.container, text=self._study_title, font=("Arial", 16)
