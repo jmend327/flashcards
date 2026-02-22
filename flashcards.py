@@ -648,11 +648,13 @@ class AppController:
         # These fields live here (not in the GUI) so any future frontend can
         # reuse the same session without reimplementing its logic.
 
-        self._study_cards         = []    # list of card dicts, shuffled
-        self._study_index         = 0     # index of the currently displayed card
-        self._study_showing_front = True  # False once the user has flipped the card
-        self._study_scored        = False # True once the user has answered this card
-        self._study_title         = ""    # display title for the study session
+        self._study_cards          = []       # list of card dicts, in current display order
+        self._study_original_cards = []       # same cards in the order they were passed in
+        self._study_index          = 0        # index of the currently displayed card
+        self._study_showing_front  = True     # False once the user has flipped the card
+        self._study_scored         = False    # True once the user has answered this card
+        self._study_title          = ""       # display title for the study session
+        self._study_order          = "Random" # current sort mode
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -874,15 +876,19 @@ class AppController:
     def start_study(self, cards, title):
         """Initialise a new study session.
 
-        Shuffles the card list so every session presents cards in a different
-        order.  After this call, get_study_state() reflects the shuffled deck.
+        Saves the original card order before shuffling so "Original" order
+        mode can restore it later.  After this call, get_study_state()
+        reflects the shuffled deck.
         """
+        # Snapshot the pre-shuffle order so it can be restored on demand.
+        self._study_original_cards = list(cards)
         random.shuffle(cards)
-        self._study_cards         = cards
-        self._study_title         = title
-        self._study_index         = 0
-        self._study_showing_front = True
-        self._study_scored        = False
+        self._study_cards          = cards
+        self._study_title          = title
+        self._study_index          = 0
+        self._study_showing_front  = True
+        self._study_scored         = False
+        self._study_order          = "Random"
 
     def get_study_state(self):
         """Return a snapshot of the current study session for the view to render.
@@ -907,6 +913,10 @@ class AppController:
             "total":         len(self._study_cards),
             "showing_front": self._study_showing_front,
             "scored":        self._study_scored,
+            # Included so the view can initialise the Order dropdown to the
+            # correct value when rebuilding the study UI (e.g. after editing
+            # a card mid-session).
+            "order":         self._study_order,
         }
 
     def flip_card(self):
@@ -1006,6 +1016,38 @@ class AppController:
         self._study_scored        = False
         return self.get_study_state()
 
+    def set_study_order(self, mode):
+        """Re-sort the active study list and restart from card 0.
+
+        Args:
+            mode: one of "Random", "Original", or "Lowest-scored"
+
+        "Original" restores the order the caller passed to start_study.
+        "Random" re-shuffles in place (different shuffle from the first one).
+        "Lowest-scored" puts cards with the fewest correct answers first;
+            cards with no attempts are treated as score -1 so they appear first.
+
+        Resets index, flip, and scored state.
+        Returns the updated study state.
+        """
+        self._study_order = mode
+        if mode == "Original":
+            # Build a rank map from the snapshot taken at session start.
+            id_rank = {c["id"]: i for i, c in enumerate(self._study_original_cards)}
+            self._study_cards = sorted(self._study_cards, key=lambda c: id_rank[c["id"]])
+        elif mode == "Random":
+            random.shuffle(self._study_cards)
+        else:  # "Lowest-scored"
+            def score_key(c):
+                total = c["correct"] + c["incorrect"]
+                # No attempts → treat as score -1 so those cards sort first.
+                return c["correct"] / total if total > 0 else -1.0
+            self._study_cards = sorted(self._study_cards, key=score_key)
+        self._study_index         = 0
+        self._study_showing_front = True
+        self._study_scored        = False
+        return self.get_study_state()
+
     def get_study_deck_cards(self, deck_path, deck_name):
         """Build the card list for studying an entire deck.
 
@@ -1092,6 +1134,9 @@ class TkView:
 
         The command callback is provided by the caller, keeping navigation
         decisions in the view rather than hardcoded into a helper.
+
+        Returns the top_bar Frame so callers can pack additional widgets
+        (e.g. the Order dropdown in the study view) into the same row.
         """
         top_bar = tk.Frame(self.container)
         top_bar.pack(fill=tk.X, padx=8, pady=(6, 0))
@@ -1104,6 +1149,7 @@ class TkView:
             relief=tk.FLAT,
             cursor="hand2",
         ).pack(side=tk.LEFT)
+        return top_bar
 
     # ── Home view ─────────────────────────────────────────────────────────────
 
@@ -1626,9 +1672,13 @@ class TkView:
         _start_study and _resume_study methods.
         """
         self._clear()
-        self._add_back_button(self._study_back_callback)
+        top_bar = self._add_back_button(self._study_back_callback)
 
         state = self.ctrl.get_study_state()
+
+        # Order dropdown lives in the same top bar row as the back button so it
+        # doesn't consume vertical space from the card area.
+        self._add_order_menu(top_bar, state["order"])
 
         tk.Label(
             self.container, text=state["title"], font=("Arial", 16)
@@ -1863,6 +1913,36 @@ class TkView:
             tk.Label(
                 self._action_frame, text="Scored!", font=("Arial", 11), fg="gray"
             ).pack(side=tk.LEFT, padx=5)
+
+    def _add_order_menu(self, top_bar, current_order):
+        """Add the card-order OptionMenu to the right side of top_bar.
+
+        The dropdown lets the user re-sort the study deck without leaving the
+        session.  It packs to the right so it doesn't crowd the ← button.
+
+        Args:
+            top_bar:       The Frame returned by _add_back_button.
+            current_order: String matching one of the ORDER_OPTIONS entries,
+                           used to pre-select the current mode on rebuild.
+        """
+        ORDER_OPTIONS = ["Random", "Original", "Lowest-scored"]
+        self._order_var = tk.StringVar(value=current_order)
+        tk.OptionMenu(
+            top_bar,
+            self._order_var,
+            *ORDER_OPTIONS,
+            command=self._on_study_order_change,
+        ).pack(side=tk.RIGHT, padx=4)
+        tk.Label(top_bar, text="Order:", font=("Arial", 10)).pack(side=tk.RIGHT)
+
+    def _on_study_order_change(self, mode):
+        """Called when the user picks a new order from the dropdown.
+
+        Delegates to the controller (which re-sorts and resets the index),
+        then re-renders the study view to reflect the new first card.
+        """
+        state = self.ctrl.set_study_order(mode)
+        self._render_study_state(state)
 
     def on_close(self):
         self.ctrl.close()
