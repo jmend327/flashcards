@@ -73,15 +73,25 @@ class ScoreStore:
         }
     """
 
-    def __init__(self):
-        os.makedirs(LOCAL_DIR, exist_ok=True)
+    def __init__(self, base_dir=BASE_DIR):
+        # Derive the local-state directory and scores file path from base_dir
+        # rather than from module-level constants, so that tests can pass a
+        # temporary directory and never touch the real scores file.
+        self._base_dir    = base_dir
+        local_dir         = os.path.join(base_dir, ".local")
+        self._scores_path = os.path.join(local_dir, "scores.json")
+
+        os.makedirs(local_dir, exist_ok=True)
         self._data = {}
-        if os.path.exists(SCORES_PATH):
+        if os.path.exists(self._scores_path):
             try:
-                with open(SCORES_PATH, "r", encoding="utf-8") as f:
+                with open(self._scores_path, "r", encoding="utf-8") as f:
                     self._data = json.load(f)
-            except Exception:
-                # If the file is corrupt, start fresh rather than crashing.
+            except (OSError, json.JSONDecodeError):
+                # OSError:          file disappeared between the exists() check
+                #                   and the open(), or permissions changed.
+                # JSONDecodeError:  file exists but its contents are corrupt.
+                # Either way, start with an empty store rather than crashing.
                 pass
 
     def _rel(self, abs_path):
@@ -90,11 +100,11 @@ class ScoreStore:
         Forward slashes are used regardless of OS so the scores file can be
         shared across Windows/macOS/Linux without key mismatches.
         """
-        return os.path.relpath(abs_path, BASE_DIR).replace(os.sep, "/")
+        return os.path.relpath(abs_path, self._base_dir).replace(os.sep, "/")
 
     def _flush(self):
         """Write the in-memory data dict to disk immediately."""
-        with open(SCORES_PATH, "w", encoding="utf-8") as f:
+        with open(self._scores_path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=2)
 
     def get(self, deck_path, local_id):
@@ -147,11 +157,18 @@ class DeckStorage:
     This keeps higher layers unaware of the on-disk representation.
     """
 
-    def __init__(self):
-        os.makedirs(PUBLIC_DIR, exist_ok=True)
-        os.makedirs(PRIVATE_DIR, exist_ok=True)
+    def __init__(self, base_dir=BASE_DIR):
+        # Derive all directory paths from base_dir so tests can point the
+        # entire storage layer at a temporary directory without touching
+        # the real deck files or scores.
+        self._base_dir    = base_dir
+        self._public_dir  = os.path.join(base_dir, "public_flashcards")
+        self._private_dir = os.path.join(base_dir, "private_flashcards")
 
-        self.scores = ScoreStore()
+        os.makedirs(self._public_dir,  exist_ok=True)
+        os.makedirs(self._private_dir, exist_ok=True)
+
+        self.scores = ScoreStore(base_dir=base_dir)
 
         # Session-ID registry — maps a runtime integer to a (deck_path, local_id)
         # pair.  Session IDs are not persisted; they reset each run.  They exist
@@ -217,15 +234,16 @@ class DeckStorage:
         After a successful migration the .db file is renamed to .db.migrated so
         this code is skipped on every subsequent startup.
         """
-        if not os.path.exists(LEGACY_DB):
+        legacy_db = os.path.join(self._base_dir, "flashcards.db")
+        if not os.path.exists(legacy_db):
             return
         try:
             import sqlite3
-            conn  = sqlite3.connect(LEGACY_DB)
+            conn  = sqlite3.connect(legacy_db)
             decks = conn.execute("SELECT id, name FROM decks").fetchall()
             for deck_id, deck_name in decks:
                 PUBLIC_NAMES = {"Light Trivia", "Fun Trivia Mix"}
-                folder = PUBLIC_DIR if deck_name in PUBLIC_NAMES else PRIVATE_DIR
+                folder = self._public_dir if deck_name in PUBLIC_NAMES else self._private_dir
                 safe   = self._safe_name(deck_name)
                 target = os.path.join(folder, safe + ".json")
                 if os.path.exists(target):
@@ -276,7 +294,7 @@ class DeckStorage:
                 })
 
             conn.close()
-            os.rename(LEGACY_DB, LEGACY_DB + ".migrated")
+            os.rename(legacy_db, legacy_db + ".migrated")
         except Exception as e:
             print(f"Migration warning: {e}")
 
@@ -289,11 +307,11 @@ class DeckStorage:
         moves those counts into ScoreStore and strips the fields from deck files
         so content and scores are fully separated going forward.
         """
-        for folder in (PUBLIC_DIR, PRIVATE_DIR):
+        for folder in (self._public_dir, self._private_dir):
             for deck_path, _ in self.get_decks_in_folder(folder):
                 try:
                     data = self._load(deck_path)
-                except Exception:
+                except (OSError, json.JSONDecodeError):
                     continue
                 dirty = False
                 for card in data.get("cards", []):
@@ -311,7 +329,7 @@ class DeckStorage:
 
     def _seed_public_decks(self):
         """Create the bundled example deck on first run if it doesn't exist yet."""
-        target = os.path.join(PUBLIC_DIR, "Fun Trivia Mix.json")
+        target = os.path.join(self._public_dir, "Fun Trivia Mix.json")
         if os.path.exists(target):
             return
         cards = [
@@ -372,7 +390,9 @@ class DeckStorage:
             try:
                 data = self._load(path)
                 result.append((path, data.get("name", fname[:-5])))
-            except Exception:
+            except (OSError, json.JSONDecodeError):
+                # Skip any file that can't be read or parsed — it may be a
+                # non-deck JSON file or a deck that was partially written.
                 pass
         result.sort(key=lambda x: x[1].lower())
         return result
@@ -401,13 +421,13 @@ class DeckStorage:
     def card_count(self, deck_path):
         try:
             return len(self._load(deck_path).get("cards", []))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return 0
 
     def get_deck_tags(self, deck_path):
         try:
             return self._load(deck_path).get("tags", [])
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return []
 
     def set_deck_tags(self, deck_path, tags):
@@ -484,7 +504,10 @@ class DeckStorage:
             _, card = self._find(data, local_id)
             if card:
                 return self._to_tuple(deck_path, card)
-        except Exception:
+        except (KeyError, OSError, json.JSONDecodeError):
+            # KeyError:       session_id not in the registry (stale ID).
+            # OSError:        deck file is unreadable.
+            # JSONDecodeError: deck file is corrupt.
             pass
         return None
 
@@ -512,7 +535,7 @@ class DeckStorage:
             data = self._load(deck_path)
             _, card = self._find(data, local_id)
             return card.get("tags", []) if card else []
-        except Exception:
+        except (KeyError, OSError, json.JSONDecodeError):
             return []
 
     def set_card_tags(self, session_id, tags):
@@ -529,7 +552,7 @@ class DeckStorage:
     def _all_deck_paths(self):
         """Return file paths for every deck in both public and private folders."""
         paths = []
-        for folder in (PUBLIC_DIR, PRIVATE_DIR):
+        for folder in (self._public_dir, self._private_dir):
             for path, _ in self.get_decks_in_folder(folder):
                 paths.append(path)
         return paths
@@ -540,7 +563,7 @@ class DeckStorage:
         for deck_path in self._all_deck_paths():
             try:
                 data = self._load(deck_path)
-            except Exception:
+            except (OSError, json.JSONDecodeError):
                 continue
             for t in data.get("tags", []):
                 deck_counts[t] = deck_counts.get(t, 0) + 1
@@ -558,7 +581,7 @@ class DeckStorage:
         for deck_path in self._all_deck_paths():
             try:
                 data = self._load(deck_path)
-            except Exception:
+            except (OSError, json.JSONDecodeError):
                 continue
             for card in data.get("cards", []):
                 if tag_name in card.get("tags", []):
@@ -571,7 +594,7 @@ class DeckStorage:
         for deck_path in self._all_deck_paths():
             try:
                 data = self._load(deck_path)
-            except Exception:
+            except (OSError, json.JSONDecodeError):
                 continue
             if tag_name in data.get("tags", []):
                 for card in data.get("cards", []):
@@ -613,8 +636,13 @@ class AppController:
     AppController, DeckStorage, and ScoreStore completely unchanged.
     """
 
-    def __init__(self):
-        self.db = DeckStorage()
+    def __init__(self, base_dir=BASE_DIR):
+        # Pass base_dir through to the storage layer so the whole stack can be
+        # redirected to a temporary directory for testing.  Production code
+        # calls AppController() with no arguments and gets the real directories.
+        self._private_dir = os.path.join(base_dir, "private_flashcards")
+        self._public_dir  = os.path.join(base_dir, "public_flashcards")
+        self.db = DeckStorage(base_dir=base_dir)
 
         # ── Study session state ───────────────────────────────────────────────
         # These fields live here (not in the GUI) so any future frontend can
@@ -669,8 +697,8 @@ class AppController:
                 for path, name in self.db.get_decks_in_folder(folder)
             ]
         return {
-            "public_decks":  _info(PUBLIC_DIR),
-            "private_decks": _info(PRIVATE_DIR),
+            "public_decks":  _info(self._public_dir),
+            "private_decks": _info(self._private_dir),
         }
 
     def create_deck(self, name):
@@ -683,7 +711,7 @@ class AppController:
         name = (name or "").strip()
         if not name:
             return False, "Deck name cannot be empty."
-        path = self.db.create_deck(name, PRIVATE_DIR)
+        path = self.db.create_deck(name, self._private_dir)
         return True, path
 
     def rename_deck(self, deck_path, new_name):
