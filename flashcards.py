@@ -50,7 +50,6 @@ PUBLIC_DIR  = os.path.join(BASE_DIR, "public_flashcards")   # bundled example de
 PRIVATE_DIR = os.path.join(BASE_DIR, "private_flashcards")  # user decks (gitignored)
 LOCAL_DIR   = os.path.join(BASE_DIR, ".local")              # runtime state (gitignored)
 SCORES_PATH = os.path.join(LOCAL_DIR, "scores.json")
-LEGACY_DB   = os.path.join(BASE_DIR, "flashcards.db")       # old SQLite file
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -129,23 +128,6 @@ class ScoreStore:
         self._data[rel][str(local_id)][1] += 1
         self._flush()
 
-    def absorb(self, deck_path, local_id, correct, incorrect):
-        """Merge externally-supplied scores into the store.
-
-        Used during migration when scores were previously baked into deck files
-        or the old SQLite database.  Adds to any existing counts rather than
-        overwriting them.
-        """
-        if correct == 0 and incorrect == 0:
-            return
-        rel = self._rel(deck_path)
-        existing = self._data.get(rel, {}).get(str(local_id), [0, 0])
-        self._data.setdefault(rel, {})[str(local_id)] = [
-            existing[0] + correct,
-            existing[1] + incorrect,
-        ]
-        self._flush()
-
 
 class DeckStorage:
     """File-based storage layer.  Each deck is a .json file in either
@@ -178,9 +160,7 @@ class DeckStorage:
         self._reverse  = {}   # (deck_path, local_card_id) → session_id
         self._next_sid = 1
 
-        # Run one-time migrations and bootstrap example data on startup.
-        self._migrate_from_sqlite()
-        self._migrate_scores_from_decks()
+        # Bootstrap example data on startup.
         self._seed_public_decks()
 
     # ── File helpers ──────────────────────────────────────────────────────────
@@ -225,105 +205,6 @@ class DeckStorage:
     def _resolve(self, session_id):
         """Look up the (deck_path, local_id) pair for a session ID."""
         return self._registry[session_id]
-
-    # ── Migration from old SQLite DB ──────────────────────────────────────────
-
-    def _migrate_from_sqlite(self):
-        """One-time migration: convert the legacy SQLite database to JSON files.
-
-        After a successful migration the .db file is renamed to .db.migrated so
-        this code is skipped on every subsequent startup.
-        """
-        legacy_db = os.path.join(self._base_dir, "flashcards.db")
-        if not os.path.exists(legacy_db):
-            return
-        try:
-            import sqlite3
-            conn  = sqlite3.connect(legacy_db)
-            decks = conn.execute("SELECT id, name FROM decks").fetchall()
-            for deck_id, deck_name in decks:
-                PUBLIC_NAMES = {"Light Trivia", "Fun Trivia Mix"}
-                folder = self._public_dir if deck_name in PUBLIC_NAMES else self._private_dir
-                safe   = self._safe_name(deck_name)
-                target = os.path.join(folder, safe + ".json")
-                if os.path.exists(target):
-                    continue  # Already migrated this deck; skip.
-
-                rows = conn.execute(
-                    "SELECT id, front, back, correct_count, incorrect_count,"
-                    " card_type, choices FROM cards WHERE deck_id = ?"
-                    " ORDER BY created_at",
-                    (deck_id,),
-                ).fetchall()
-
-                deck_tags = [
-                    r[0] for r in conn.execute(
-                        "SELECT t.name FROM tags t"
-                        " JOIN deck_tags dt ON t.id = dt.tag_id"
-                        " WHERE dt.deck_id = ?",
-                        (deck_id,),
-                    ).fetchall()
-                ]
-
-                cards = []
-                for i, row in enumerate(rows, 1):
-                    old_id, front, back, correct, incorrect, ctype, choices_json = row
-                    ctags = [
-                        r[0] for r in conn.execute(
-                            "SELECT t.name FROM tags t"
-                            " JOIN card_tags ct ON t.id = ct.tag_id"
-                            " WHERE ct.card_id = ?",
-                            (old_id,),
-                        ).fetchall()
-                    ]
-                    cards.append({
-                        "id":        i,
-                        "front":     front,
-                        "back":      back,
-                        "card_type": ctype,
-                        "choices":   json.loads(choices_json) if choices_json else None,
-                        "tags":      ctags,
-                    })
-                    self.scores.absorb(target, i, correct, incorrect)
-
-                self._save(target, {
-                    "name":    deck_name,
-                    "tags":    deck_tags,
-                    "next_id": len(cards) + 1,
-                    "cards":   cards,
-                })
-
-            conn.close()
-            os.rename(legacy_db, legacy_db + ".migrated")
-        except Exception as e:
-            print(f"Migration warning: {e}")
-
-    # ── Score migration from deck files ───────────────────────────────────────
-
-    def _migrate_scores_from_decks(self):
-        """Extract correct_count/incorrect_count fields baked into older deck files.
-
-        Older versions of the app stored scores inside deck JSON.  This method
-        moves those counts into ScoreStore and strips the fields from deck files
-        so content and scores are fully separated going forward.
-        """
-        for folder in (self._public_dir, self._private_dir):
-            for deck_path, _ in self.get_decks_in_folder(folder):
-                try:
-                    data = self._load(deck_path)
-                except (OSError, json.JSONDecodeError):
-                    continue
-                dirty = False
-                for card in data.get("cards", []):
-                    correct   = card.pop("correct_count",   None)
-                    incorrect = card.pop("incorrect_count", None)
-                    if correct is not None or incorrect is not None:
-                        dirty = True
-                        self.scores.absorb(
-                            deck_path, card["id"], correct or 0, incorrect or 0
-                        )
-                if dirty:
-                    self._save(deck_path, data)
 
     # ── Public example deck seeding ───────────────────────────────────────────
 
