@@ -160,9 +160,6 @@ class DeckStorage:
         self._reverse  = {}   # (deck_path, local_card_id) → session_id
         self._next_sid = 1
 
-        # Bootstrap example data on startup.
-        self._seed_public_decks()
-
     # ── File helpers ──────────────────────────────────────────────────────────
 
     def _load(self, path):
@@ -205,57 +202,6 @@ class DeckStorage:
     def _resolve(self, session_id):
         """Look up the (deck_path, local_id) pair for a session ID."""
         return self._registry[session_id]
-
-    # ── Public example deck seeding ───────────────────────────────────────────
-
-    def _seed_public_decks(self):
-        """Create the bundled example deck on first run if it doesn't exist yet."""
-        target = os.path.join(self._public_dir, "Fun Trivia Mix.json")
-        if os.path.exists(target):
-            return
-        cards = [
-            {
-                "id": 1, "front": "Which planet is closest to the Sun?",
-                "back": "Mercury", "card_type": "mc",
-                "choices": ["Venus", "Earth", "Mars"], "tags": [],
-            },
-            {
-                "id": 2, "front": "What is the largest ocean on Earth?",
-                "back": "Pacific Ocean", "card_type": "mc",
-                "choices": ["Atlantic Ocean", "Indian Ocean", "Arctic Ocean"], "tags": [],
-            },
-            {
-                "id": 3, "front": "How many sides does a pentagon have?",
-                "back": "5", "card_type": "mc",
-                "choices": ["4", "6", "8"], "tags": [],
-            },
-            {
-                "id": 4,
-                "front": "What is the most spoken language in the world by native speakers?",
-                "back": "Mandarin Chinese", "card_type": "mc",
-                "choices": ["English", "Spanish", "Hindi"], "tags": [],
-            },
-            {
-                "id": 5, "front": "What is 15% of 200?",
-                "back": "30", "card_type": "mc",
-                "choices": ["25", "35", "45"], "tags": [],
-            },
-            {
-                "id": 6, "front": "What year did World War II end?",
-                "back": "1945", "card_type": "free", "choices": None, "tags": [],
-            },
-            {
-                "id": 7, "front": "What gas do plants absorb during photosynthesis?",
-                "back": "Carbon dioxide (CO2)", "card_type": "free", "choices": None, "tags": [],
-            },
-            {
-                "id": 8, "front": "What is the square root of 64?",
-                "back": "8", "card_type": "free", "choices": None, "tags": [],
-            },
-        ]
-        self._save(target, {
-            "name": "Fun Trivia Mix", "tags": [], "next_id": 9, "cards": cards,
-        })
 
     # ── Folder queries ────────────────────────────────────────────────────────
 
