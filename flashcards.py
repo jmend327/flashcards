@@ -1044,6 +1044,8 @@ class TkView:
         tk.Button(btn_frame2, text="Deck Tags",    command=self._edit_deck_tags,  width=12).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame2, text="Study by Tag", command=self.show_tag_picker,  width=12).pack(side=tk.LEFT, padx=5)
 
+        self.root.update_idletasks()
+
     def _selected_deck(self):
         """Return the selected deck info dict, or None with a warning dialog."""
         sel = self.deck_listbox.curselection()
@@ -1173,6 +1175,8 @@ class TkView:
             btn_frame, text="Study", command=self._study_selected_tags, width=12
         ).pack(side=tk.LEFT, padx=5)
 
+        self.root.update_idletasks()
+
     def _study_selected_tags(self):
         """Start a study session for whichever tag(s) are selected."""
         sel = self._tag_listbox.curselection()
@@ -1269,6 +1273,8 @@ class TkView:
             command=lambda: self._study_deck(deck_path, deck_name),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
+
+        self.root.update_idletasks()
 
     def _edit_card(self, deck_path, deck_name):
         sel = self.card_listbox.curselection()
@@ -1469,6 +1475,8 @@ class TkView:
             command=lambda: (canvas.unbind_all("<MouseWheel>"), navigate_back()),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
+
+        self.root.update_idletasks()
 
     # ── Study view ────────────────────────────────────────────────────────────
 
