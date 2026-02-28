@@ -38,6 +38,7 @@ import json
 import os
 import re
 import random
+import sys
 
 
 # ── Directory layout ──────────────────────────────────────────────────────────
@@ -1028,7 +1029,7 @@ class TkView:
         add_section("Example Sets", data["public_decks"])
         add_section("My Sets",      data["private_decks"])
 
-        self.deck_listbox.bind("<Double-Button-1>", lambda e: self._open_deck())
+        self.deck_listbox.bind("<Double-Button-1>", lambda e: self.root.after(50, self._open_deck))
 
         btn_frame = tk.Frame(self.container)
         btn_frame.pack(pady=(0, 5))
@@ -1165,7 +1166,7 @@ class TkView:
             self._tag_listbox.insert(tk.END, f"{tag['name']}  ({info})")
 
         self._tag_listbox.bind(
-            "<Double-Button-1>", lambda e: self._study_selected_tags()
+            "<Double-Button-1>", lambda e: self.root.after(50, self._study_selected_tags)
         )
 
         btn_frame = tk.Frame(self.container)
@@ -1788,6 +1789,11 @@ def main():
     root = tk.Tk()
     app  = TkView(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
+    if sys.platform == "darwin":
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after_idle(root.attributes, "-topmost", False)
+        root.focus_force()
     root.mainloop()
 
 
