@@ -41,6 +41,12 @@ import random
 import sys
 
 
+# ── View configuration ────────────────────────────────────────────────────────
+# Arial is available on Windows and macOS; DejaVu Sans is the nearest equivalent
+# on most Linux distributions.
+UI_FONT_FAMILY = "DejaVu Sans" if sys.platform == "linux" else "Arial"
+
+
 # ── Directory layout ──────────────────────────────────────────────────────────
 # All paths are relative to the directory that contains this script.
 # Using relative paths means the whole project folder can be moved or copied
@@ -942,6 +948,14 @@ class TkView:
         self.root.title("Flashcards")
         self.root.geometry("600x550")
         self.root.minsize(400, 400)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # macOS: ensure the window appears in front and has keyboard focus.
+        if sys.platform == "darwin":
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.after_idle(self.root.attributes, "-topmost", False)
+            self.root.focus_force()
 
         # The controller is the only object the view talks to directly.
         # Never access self.ctrl.db from inside TkView.
@@ -971,13 +985,35 @@ class TkView:
         tk.Button(
             top_bar,
             text="\u2190",
-            font=("Arial", 14),
+            font=(UI_FONT_FAMILY, 14),
             command=command,
             bd=0,
             relief=tk.FLAT,
             cursor="hand2",
         ).pack(side=tk.LEFT)
         return top_bar
+
+    def _bind_mousewheel(self, canvas):
+        """Bind mouse-wheel events to scroll canvas, cross-platform.
+
+        Windows:  <MouseWheel> fires with event.delta in multiples of 120.
+        macOS:    <MouseWheel> fires with event.delta in small units (~1–10).
+        Linux:    <MouseWheel> does not fire; uses <Button-4>/<Button-5> instead.
+        """
+        if sys.platform == "linux":
+            canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+            canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll( 1, "units"))
+        elif sys.platform == "darwin":
+            canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * e.delta), "units"))
+        else:  # Windows
+            canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+    def _unbind_mousewheel(self, canvas):
+        """Remove mouse-wheel bindings set by _bind_mousewheel."""
+        canvas.unbind_all("<MouseWheel>")
+        if sys.platform == "linux":
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
 
     # ── Home view ─────────────────────────────────────────────────────────────
 
@@ -986,7 +1022,7 @@ class TkView:
         self._clear()
 
         tk.Label(
-            self.container, text="Flashcards", font=("Arial", 24, "bold")
+            self.container, text="Flashcards", font=(UI_FONT_FAMILY, 24, "bold")
         ).pack(pady=(20, 10))
 
         list_frame = tk.Frame(self.container)
@@ -996,7 +1032,7 @@ class TkView:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.deck_listbox = tk.Listbox(
-            list_frame, font=("Arial", 14), yscrollcommand=scrollbar.set
+            list_frame, font=(UI_FONT_FAMILY, 14), yscrollcommand=scrollbar.set
         )
         self.deck_listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.deck_listbox.yview)
@@ -1128,13 +1164,13 @@ class TkView:
         self._add_back_button(self.show_home)
 
         tk.Label(
-            self.container, text="Study by Tag", font=("Arial", 20, "bold")
+            self.container, text="Study by Tag", font=(UI_FONT_FAMILY, 20, "bold")
         ).pack(pady=(20, 10))
 
         tk.Label(
             self.container,
             text="Select one or more tags to study (Ctrl/Shift to multi-select):",
-            font=("Arial", 11),
+            font=(UI_FONT_FAMILY, 11),
         ).pack()
 
         list_frame = tk.Frame(self.container)
@@ -1145,7 +1181,7 @@ class TkView:
 
         self._tag_listbox = tk.Listbox(
             list_frame,
-            font=("Arial", 14),
+            font=(UI_FONT_FAMILY, 14),
             yscrollcommand=scrollbar.set,
             selectmode=tk.EXTENDED,  # Allows Ctrl/Shift multi-select.
         )
@@ -1207,7 +1243,7 @@ class TkView:
         self._add_back_button(self.show_home)
 
         tk.Label(
-            self.container, text=deck_name, font=("Arial", 20, "bold")
+            self.container, text=deck_name, font=(UI_FONT_FAMILY, 20, "bold")
         ).pack(pady=(20, 5))
 
         dtags = self.ctrl.get_deck_tags(deck_path)
@@ -1215,7 +1251,7 @@ class TkView:
             tk.Label(
                 self.container,
                 text=f"Tags: {', '.join(dtags)}",
-                font=("Arial", 10),
+                font=(UI_FONT_FAMILY, 10),
                 fg="gray",
             ).pack()
 
@@ -1226,7 +1262,7 @@ class TkView:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.card_listbox = tk.Listbox(
-            list_frame, font=("Arial", 12), yscrollcommand=scrollbar.set
+            list_frame, font=(UI_FONT_FAMILY, 12), yscrollcommand=scrollbar.set
         )
         self.card_listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.card_listbox.yview)
@@ -1326,7 +1362,7 @@ class TkView:
         tk.Label(
             self.container,
             text="Edit Card" if editing else "Add Card",
-            font=("Arial", 20, "bold"),
+            font=(UI_FONT_FAMILY, 20, "bold"),
         ).pack(pady=(20, 10))
 
         # ── Scrollable form ───────────────────────────────────────────────────
@@ -1349,37 +1385,34 @@ class TkView:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(40, 0), pady=10)
         form_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 40), pady=10)
 
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self._bind_mousewheel(canvas)
 
         form = form_outer
 
         # ── Card type selector ────────────────────────────────────────────────
-        tk.Label(form, text="Card Type:", font=("Arial", 12)).pack(anchor=tk.W)
+        tk.Label(form, text="Card Type:", font=(UI_FONT_FAMILY, 12)).pack(anchor=tk.W)
         type_var   = tk.StringVar(value="free")
         type_frame = tk.Frame(form)
         type_frame.pack(anchor=tk.W, pady=(0, 10))
 
         tk.Radiobutton(
             type_frame, text="Free Response", variable=type_var, value="free",
-            font=("Arial", 11), command=lambda: _toggle_type(),
+            font=(UI_FONT_FAMILY, 11), command=lambda: _toggle_type(),
         ).pack(side=tk.LEFT, padx=(0, 15))
         tk.Radiobutton(
             type_frame, text="Multiple Choice", variable=type_var, value="mc",
-            font=("Arial", 11), command=lambda: _toggle_type(),
+            font=(UI_FONT_FAMILY, 11), command=lambda: _toggle_type(),
         ).pack(side=tk.LEFT)
 
         # ── Front / back text fields ──────────────────────────────────────────
-        tk.Label(form, text="Front (Question):", font=("Arial", 12)).pack(anchor=tk.W)
-        front_text = tk.Text(form, height=3, font=("Arial", 12), wrap=tk.WORD)
+        tk.Label(form, text="Front (Question):", font=(UI_FONT_FAMILY, 12)).pack(anchor=tk.W)
+        front_text = tk.Text(form, height=3, font=(UI_FONT_FAMILY, 12), wrap=tk.WORD)
         front_text.pack(fill=tk.X, pady=(0, 10))
 
         # Label text changes based on card type (Answer vs Correct Answer).
-        self._back_label = tk.Label(form, text="Back (Answer):", font=("Arial", 12))
+        self._back_label = tk.Label(form, text="Back (Answer):", font=(UI_FONT_FAMILY, 12))
         self._back_label.pack(anchor=tk.W)
-        back_text = tk.Text(form, height=3, font=("Arial", 12), wrap=tk.WORD)
+        back_text = tk.Text(form, height=3, font=(UI_FONT_FAMILY, 12), wrap=tk.WORD)
         back_text.pack(fill=tk.X, pady=(0, 10))
 
         # ── Multiple-choice wrong-choices section ─────────────────────────────
@@ -1387,7 +1420,7 @@ class TkView:
         self._mc_frame   = tk.Frame(form)
         self._mc_entries = []  # One Entry widget per wrong choice.
 
-        tk.Label(self._mc_frame, text="Wrong Choices:", font=("Arial", 12)).pack(anchor=tk.W)
+        tk.Label(self._mc_frame, text="Wrong Choices:", font=(UI_FONT_FAMILY, 12)).pack(anchor=tk.W)
 
         self._mc_entries_frame = tk.Frame(self._mc_frame)
         self._mc_entries_frame.pack(fill=tk.X)
@@ -1398,15 +1431,15 @@ class TkView:
         tk.Button(mc_btn_frame, text="- Remove Last",  command=lambda: _remove_choice_entry()).pack(side=tk.LEFT)
 
         # ── Tags ──────────────────────────────────────────────────────────────
-        tk.Label(form, text="Tags (comma-separated):", font=("Arial", 12)).pack(anchor=tk.W)
-        tags_entry = tk.Entry(form, font=("Arial", 12))
+        tk.Label(form, text="Tags (comma-separated):", font=(UI_FONT_FAMILY, 12)).pack(anchor=tk.W)
+        tags_entry = tk.Entry(form, font=(UI_FONT_FAMILY, 12))
         tags_entry.pack(fill=tk.X, pady=(0, 10))
 
         # ── Wrong-choice helpers ──────────────────────────────────────────────
 
         def _add_choice_entry(value=""):
             """Append one wrong-choice Entry widget to the MC section."""
-            entry = tk.Entry(self._mc_entries_frame, font=("Arial", 12))
+            entry = tk.Entry(self._mc_entries_frame, font=(UI_FONT_FAMILY, 12))
             entry.pack(fill=tk.X, pady=2)
             if value:
                 entry.insert(0, value)
@@ -1462,7 +1495,7 @@ class TkView:
 
             # Unbind the mousewheel before navigating away so the binding
             # doesn't leak into subsequent views.
-            canvas.unbind_all("<MouseWheel>")
+            self._unbind_mousewheel(canvas)
             navigate_back()
 
         # ── Buttons ───────────────────────────────────────────────────────────
@@ -1473,7 +1506,7 @@ class TkView:
         tk.Button(btn_frame, text="Save",   command=save,  width=12).pack(side=tk.LEFT, padx=5)
         tk.Button(
             btn_frame, text="Cancel",
-            command=lambda: (canvas.unbind_all("<MouseWheel>"), navigate_back()),
+            command=lambda: (self._unbind_mousewheel(canvas), navigate_back()),
             width=12,
         ).pack(side=tk.LEFT, padx=5)
 
@@ -1517,16 +1550,16 @@ class TkView:
         self._add_order_menu(top_bar, state["order"])
 
         tk.Label(
-            self.container, text=state["title"], font=("Arial", 16)
+            self.container, text=state["title"], font=(UI_FONT_FAMILY, 16)
         ).pack(pady=(20, 5))
 
         # Progress counter label (e.g. "Card 3 of 10").
-        self._study_counter = tk.Label(self.container, text="", font=("Arial", 11))
+        self._study_counter = tk.Label(self.container, text="", font=(UI_FONT_FAMILY, 11))
         self._study_counter.pack()
 
         # Historical score label (e.g. "Score: 7/10 (70%)").
         self._study_score_label = tk.Label(
-            self.container, text="", font=("Arial", 10), fg="gray"
+            self.container, text="", font=(UI_FONT_FAMILY, 10), fg="gray"
         )
         self._study_score_label.pack()
 
@@ -1536,7 +1569,7 @@ class TkView:
 
         # "FRONT" / "BACK" / "MULTIPLE CHOICE" indicator.
         self._study_side_label = tk.Label(
-            self._study_card_frame, text="FRONT", font=("Arial", 10), fg="gray"
+            self._study_card_frame, text="FRONT", font=(UI_FONT_FAMILY, 10), fg="gray"
         )
         self._study_side_label.pack(pady=(10, 0))
 
@@ -1544,7 +1577,7 @@ class TkView:
         self._study_label = tk.Label(
             self._study_card_frame,
             text="",
-            font=("Arial", 16),
+            font=(UI_FONT_FAMILY, 16),
             wraplength=400,
             justify=tk.CENTER,
         )
@@ -1557,7 +1590,7 @@ class TkView:
 
         # Feedback text shown after answering ("Correct!", "Incorrect! Answer: …").
         self._study_feedback = tk.Label(
-            self._study_card_frame, text="", font=("Arial", 11)
+            self._study_card_frame, text="", font=(UI_FONT_FAMILY, 11)
         )
         self._study_feedback.pack(pady=(0, 10))
 
@@ -1614,13 +1647,14 @@ class TkView:
         if result is None:
             return  # Card was already scored; ignore stray clicks.
 
-        # Colour the buttons: green for the correct answer, red for the wrong pick.
-        for btn in self._mc_choice_btns:
-            if btn["text"] == result["correct_answer"]:
-                btn.config(bg="green", fg="white")
-            elif btn["text"] == chosen and not result["is_correct"]:
-                btn.config(bg="red", fg="white")
-            btn.config(state=tk.DISABLED)
+        # Disable further clicks, then colour: green = correct, red = wrong pick.
+        for lbl in self._mc_choice_btns:
+            lbl.unbind("<Button-1>")
+            lbl.config(cursor="")
+            if lbl["text"] == result["correct_answer"]:
+                lbl.config(bg="green", fg="white")
+            elif lbl["text"] == chosen and not result["is_correct"]:
+                lbl.config(bg="red", fg="white")
 
         # Show feedback text below the choices.
         if result["is_correct"]:
@@ -1713,15 +1747,20 @@ class TkView:
             all_choices = [card["back"]] + card["choices"]
             random.shuffle(all_choices)
             for choice in all_choices:
-                btn = tk.Button(
+                lbl = tk.Label(
                     self._study_mc_frame,
                     text=choice,
-                    font=("Arial", 12),
+                    font=(UI_FONT_FAMILY, 12),
                     anchor=tk.W,
-                    command=lambda c=choice: self._on_mc_select(c),
+                    relief=tk.RAISED,
+                    bd=2,
+                    padx=6,
+                    pady=4,
+                    cursor="hand2",
                 )
-                btn.pack(fill=tk.X, pady=2)
-                self._mc_choice_btns.append(btn)
+                lbl.bind("<Button-1>", lambda e, c=choice: self._on_mc_select(c))
+                lbl.pack(fill=tk.X, pady=2)
+                self._mc_choice_btns.append(lbl)
 
         # ── Action buttons ────────────────────────────────────────────────────
         # The action frame is cleared and repopulated each render so the right
@@ -1737,17 +1776,23 @@ class TkView:
                 command=self._on_flip_click, width=12,
             ).pack(side=tk.LEFT, padx=5)
         elif not scored:
-            tk.Button(
+            lbl_correct = tk.Label(
                 self._action_frame, text="Correct",
-                command=self._on_mark_correct, width=12, fg="green",
-            ).pack(side=tk.LEFT, padx=5)
-            tk.Button(
+                fg="green", font=(UI_FONT_FAMILY, 11),
+                relief=tk.RAISED, bd=2, padx=8, pady=4, cursor="hand2",
+            )
+            lbl_correct.bind("<Button-1>", lambda e: self._on_mark_correct())
+            lbl_correct.pack(side=tk.LEFT, padx=5)
+            lbl_incorrect = tk.Label(
                 self._action_frame, text="Incorrect",
-                command=self._on_mark_incorrect, width=12, fg="red",
-            ).pack(side=tk.LEFT, padx=5)
+                fg="red", font=(UI_FONT_FAMILY, 11),
+                relief=tk.RAISED, bd=2, padx=8, pady=4, cursor="hand2",
+            )
+            lbl_incorrect.bind("<Button-1>", lambda e: self._on_mark_incorrect())
+            lbl_incorrect.pack(side=tk.LEFT, padx=5)
         else:
             tk.Label(
-                self._action_frame, text="Scored!", font=("Arial", 11), fg="gray"
+                self._action_frame, text="Scored!", font=(UI_FONT_FAMILY, 11), fg="gray"
             ).pack(side=tk.LEFT, padx=5)
 
     def _add_order_menu(self, top_bar, current_order):
@@ -1769,7 +1814,7 @@ class TkView:
             *ORDER_OPTIONS,
             command=self._on_study_order_change,
         ).pack(side=tk.RIGHT, padx=4)
-        tk.Label(top_bar, text="Order:", font=("Arial", 10)).pack(side=tk.RIGHT)
+        tk.Label(top_bar, text="Order:", font=(UI_FONT_FAMILY, 10)).pack(side=tk.RIGHT)
 
     def _on_study_order_change(self, mode):
         """Called when the user picks a new order from the dropdown.
@@ -1787,13 +1832,7 @@ class TkView:
 
 def main():
     root = tk.Tk()
-    app  = TkView(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_close)
-    if sys.platform == "darwin":
-        root.lift()
-        root.attributes("-topmost", True)
-        root.after_idle(root.attributes, "-topmost", False)
-        root.focus_force()
+    TkView(root)
     root.mainloop()
 
 
