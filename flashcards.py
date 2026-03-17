@@ -489,6 +489,8 @@ class AppController:
         self._study_scored         = False    # True once the user has answered this card
         self._study_title          = ""       # display title for the study session
         self._study_order          = "Random" # current sort mode
+        self._study_mc_chosen         = None  # MC: the answer text the user clicked
+        self._study_mc_correct_answer = None  # MC: the correct answer text
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -751,6 +753,10 @@ class AppController:
             # correct value when rebuilding the study UI (e.g. after editing
             # a card mid-session).
             "order":         self._study_order,
+            # MC scoring data — lets the view colour choices after the user
+            # answers without storing its own scoring state.
+            "mc_chosen":         self._study_mc_chosen,
+            "mc_correct_answer": self._study_mc_correct_answer,
         }
 
     def flip_card(self):
@@ -799,6 +805,8 @@ class AppController:
 
         self._study_cards[self._study_index] = card
         self._study_scored = True
+        self._study_mc_chosen         = chosen
+        self._study_mc_correct_answer = card["back"]
 
         return {
             "is_correct":     is_correct,
@@ -834,9 +842,11 @@ class AppController:
         Resets flip and scored state so the new card starts fresh.
         Returns the updated study state.
         """
-        self._study_index         = (self._study_index + 1) % len(self._study_cards)
-        self._study_showing_front = True
-        self._study_scored        = False
+        self._study_index             = (self._study_index + 1) % len(self._study_cards)
+        self._study_showing_front     = True
+        self._study_scored            = False
+        self._study_mc_chosen         = None
+        self._study_mc_correct_answer = None
         return self.get_study_state()
 
     def prev_card(self):
@@ -845,9 +855,11 @@ class AppController:
         Resets flip and scored state so the card starts fresh.
         Returns the updated study state.
         """
-        self._study_index         = (self._study_index - 1) % len(self._study_cards)
-        self._study_showing_front = True
-        self._study_scored        = False
+        self._study_index             = (self._study_index - 1) % len(self._study_cards)
+        self._study_showing_front     = True
+        self._study_scored            = False
+        self._study_mc_chosen         = None
+        self._study_mc_correct_answer = None
         return self.get_study_state()
 
     def set_study_order(self, mode):
@@ -877,9 +889,11 @@ class AppController:
                 # No attempts → treat as score -1 so those cards sort first.
                 return c["correct"] / total if total > 0 else -1.0
             self._study_cards = sorted(self._study_cards, key=score_key)
-        self._study_index         = 0
-        self._study_showing_front = True
-        self._study_scored        = False
+        self._study_index             = 0
+        self._study_showing_front     = True
+        self._study_scored            = False
+        self._study_mc_chosen         = None
+        self._study_mc_correct_answer = None
         return self.get_study_state()
 
     def get_study_deck_cards(self, deck_path, deck_name):
@@ -1586,7 +1600,8 @@ class TkView:
         # Container for MC choice buttons (empty / unused for FR cards).
         self._study_mc_frame = tk.Frame(self._study_card_frame)
         self._study_mc_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
-        self._mc_choice_btns = []  # Populated by _render_study_state for MC cards.
+        self._mc_choice_btns = []    # Populated by _render_study_state for MC cards.
+        self._mc_choice_order = []   # Preserves choice order after scoring.
 
         # Feedback text shown after answering ("Correct!", "Incorrect! Answer: …").
         self._study_feedback = tk.Label(
@@ -1647,15 +1662,6 @@ class TkView:
         if result is None:
             return  # Card was already scored; ignore stray clicks.
 
-        # Disable further clicks, then colour: green = correct, red = wrong pick.
-        for lbl in self._mc_choice_btns:
-            lbl.unbind("<Button-1>")
-            lbl.config(cursor="")
-            if lbl["text"] == result["correct_answer"]:
-                lbl.config(bg="green", fg="white")
-            elif lbl["text"] == chosen and not result["is_correct"]:
-                lbl.config(bg="red", fg="white")
-
         # Show feedback text below the choices.
         if result["is_correct"]:
             self._study_feedback.config(text="Correct!", fg="green")
@@ -1664,6 +1670,8 @@ class TkView:
                 text=f"Incorrect! Answer: {result['correct_answer']}", fg="red"
             )
 
+        # _render_study_state rebuilds the choice labels with green/red
+        # colouring now that the state includes mc_chosen and mc_correct_answer.
         self._render_study_state(result["state"])
 
     def _on_mark_correct(self):
@@ -1741,11 +1749,17 @@ class TkView:
             widget.destroy()
         self._mc_choice_btns = []
 
-        if is_mc and not scored:
-            # Shuffle the choices fresh each time the card is shown so the
-            # correct answer isn't always in the same position.
+        if is_mc:
             all_choices = [card["back"]] + card["choices"]
-            random.shuffle(all_choices)
+            if not scored:
+                # Shuffle choices fresh each time an unscored card is shown so
+                # the correct answer isn't always in the same position.
+                random.shuffle(all_choices)
+                self._mc_choice_order = all_choices
+            else:
+                # After scoring, preserve the order the user saw.
+                all_choices = self._mc_choice_order
+
             for choice in all_choices:
                 lbl = tk.Label(
                     self._study_mc_frame,
@@ -1756,9 +1770,16 @@ class TkView:
                     bd=2,
                     padx=6,
                     pady=4,
-                    cursor="hand2",
                 )
-                lbl.bind("<Button-1>", lambda e, c=choice: self._on_mc_select(c))
+                if scored:
+                    # Colour the choices: green = correct, red = wrong pick.
+                    if choice == state.get("mc_correct_answer"):
+                        lbl.config(bg="green", fg="white")
+                    elif choice == state.get("mc_chosen") and choice != state.get("mc_correct_answer"):
+                        lbl.config(bg="red", fg="white")
+                else:
+                    lbl.config(cursor="hand2")
+                    lbl.bind("<Button-1>", lambda e, c=choice: self._on_mc_select(c))
                 lbl.pack(fill=tk.X, pady=2)
                 self._mc_choice_btns.append(lbl)
 
